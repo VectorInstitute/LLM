@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from typing import Any
 import queue
 import math
-
+from metaseq.service.constants import UNBATCHED_ARGS
 
 @dataclass
 class WorkItem:
@@ -33,11 +33,7 @@ class WorkItem:
 
     def queue_key(self):
         return PriorityQueueRingShard.key_from_dictionary(
-            {
-                "temperature": self.data["temperature"],
-                "top_p": self.data["top_p"],
-                "n": self.data["n"],
-            }
+            {k: self.data[k] if k in self.data else None for k in UNBATCHED_ARGS}
         )
 
     @staticmethod

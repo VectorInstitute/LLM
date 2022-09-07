@@ -1,8 +1,7 @@
 #!/usr/bin/env python
 
 """
-Script for backing out of the MP-resharded (reshard.pt) files and getting back
-a non-flattened state dict.
+script for converting the same sharding into megatron
 
 Particularly useful for converting our models to other repositories.
 
@@ -14,7 +13,7 @@ Usage:
     reshard-model_part-0.pt
     reshard-model_part-1.pt
 
-    $ python -m metaseq.scripts.convert_to_singleton 125m
+    $ python -m metaseq.scripts.convert_to_megatron 125m
 
     $ ls 125m
     dict.txt
@@ -49,7 +48,7 @@ logging.basicConfig(
 logger = logging.getLogger("convert_to_singleton")
 
 
-def create_generation_config_with_defaults(model_path , megatron=False):
+def create_generation_config_with_defaults(model_path):
     files = glob.glob(f"{model_path}/reshard*.pt")
 
     MP = len(files)
@@ -75,7 +74,7 @@ def create_generation_config_with_defaults(model_path , megatron=False):
         "--bpe",
         "hf_byte_bpe",
         "--path",
-        model_path + ("/reshard.pt" if not megatron else "/megatronreshard.pt"),
+        model_path + "/reshard.pt",
         "--checkpoint-shard-count",
         "1",
         "--use-sharded-state",
@@ -134,24 +133,32 @@ def worker_main(cfg: MetaseqConfig):
             for r, t in enumerate(gathered):
                 model_parts[r][name] = t.cpu()
 
-    glued = reshard_megatron_parts(model_parts, new_model_part_count=1)[0]
-    # glued['decoder.output_projection.weight'] = glued['decoder.embed_tokens.weight']
-
-    glued["decoder.version"] = model.state_dict()["decoder.version"].cpu()
-
-    if "decoder.output_projection.weight" in glued:
-        del glued["decoder.output_projection.weight"]
-
-    output_sd = checkpoint_utils.load_checkpoint_to_cpu(
-        cfg.common_eval.path.replace("reshard.pt", "reshard-model_part-0.pt")
+    # reshard everything but in megatron style :)
+    megatron_glued_parts = reshard_megatron_parts(
+        model_parts, new_model_part_count=len(model_parts)
     )
-    output_sd["model"] = utils.move_to_cpu(glued)
-    output_sd["cfg"]["model"].arch = "transformer_lm"
-    output_sd["cfg"]["model"]._name = "transformer_lm"
 
-    if distributed_utils.get_global_rank() == 0:
-        with open(cfg.task.data + "/restored.pt", "wb") as f:
-            torch.save(output_sd, f)
+    for i, glued in enumerate(megatron_glued_parts):
+        # glued['decoder.output_projection.weight'] = glued['decoder.embed_tokens.weight']
+
+        glued["decoder.version"] = model.state_dict()["decoder.version"].cpu()
+
+        if "decoder.output_projection.weight" in glued:
+            del glued["decoder.output_projection.weight"]
+
+        output_sd = checkpoint_utils.load_checkpoint_to_cpu(
+            cfg.common_eval.path.replace("reshard.pt", f"reshard-model_part-{i}.pt")
+        )
+
+        output_sd["model"] = utils.move_to_cpu(glued)
+        output_sd["cfg"]["model"].arch = "transformer_lm_megatron"
+        output_sd["cfg"]["model"]._name = "transformer_lm_megatron"
+
+        if distributed_utils.get_global_rank() == 0:
+            with open(
+                os.path.join(cfg.task.data, f"megatronreshard-model_part-{i}.pt"), "wb"
+            ) as f:
+                torch.save(output_sd, f)
 
 
 def main():
