@@ -3,6 +3,18 @@ import torch
 from megatron.mpu.mappings import gather_from_tensor_model_parallel_region
 
 from megatron.mpu import ColumnParallelLinear, RowParallelLinear
+
+from metaseq.model_parallel.modules.transformer_layer import (
+    ModelParallelTransformerDecoderLayer,
+)
+
+from metaseq.model_parallel.modules.multihead_attention import (
+    ModelParallelMultiheadAttention,
+)
+
+from metaseq.model_parallel.models.transformer import (
+    ModelParallelTransformerDecoder,
+)
 from contextlib import contextmanager
 from functools import partial
 
@@ -27,6 +39,7 @@ def apply_forward_hook(model, hook_dict):
 
         all_hooks.clear()
 
+
 def get_activation_capture_hook_dict(model, desired_module_activations):
     activation_dict, hook_dict = {}, {}
 
@@ -46,28 +59,42 @@ def forward_hook_fn(registered_name, save_dict, m, _, outputs):
 
     # only save it on rank 0 but i think we need to call the gather in all
     # processes so this hook needs to be installed on every process
+    type_m = type(m)
 
-    # TODO: add the hooks one my one class by class
-    if torch.distributed.get_rank() == 0:
-        breakpoint()
+    # too scared to do isinstance checks
+    if type_m == ColumnParallelLinear:
 
-    output = outputs
-
-    if isinstance(m, ColumnParallelLinear):
         if not m.gather_output:
             output = gather_from_tensor_model_parallel_region(outputs[0])
-            outputs = (output, *outputs[1:])
 
-    if hasattr(m, "skip_bias_add"):
-        # if skip bias add, add it back in
-        output = outputs[0] + outputs[1] if m.skip_bias_add else outputs[0]
+        if m.skip_bias_add:
+            output.add_(outputs[1])
+
+    elif type_m == RowParallelLinear:
+        output = outputs[0]
+
+        if m.skip_bias_add:
+            output.add_(outputs[1])
+
+    elif type_m in (
+        ModelParallelTransformerDecoder,
+        ModelParallelTransformerDecoderLayer,
+    ):
+        # the rest are aux info
+        output = outputs[0]
+
+    elif type_m == ModelParallelMultiheadAttention:
+        # the other param is just None
+        output, attn_bias = outputs[0]
+
+        if attn_bias is not None:
+            output.add_(attn_bias)
+
+    # best effort kind of thing
+    else:
+        # works on VocabParallelEmbedding
+        output = outputs
 
     if torch.distributed.get_rank() == 0:
-
-        if isinstance(output, (list, tuple)):
-            assert len(output) == 2 and output[1] is None
-            # bias
-            output = output[0][0] + output[0][1]
-
-        # only save it on rank 0
+        # only pytorch tensors allowed for now
         save_dict[registered_name] = output.detach().cpu()

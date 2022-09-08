@@ -217,6 +217,8 @@ def batching_loop(timeout=100, max_tokens=MAX_BATCH_TOKENS):
                     # S x B x D
                     act_ret_dict[k] = v.view(-1, len(batch), v.size(-1))
 
+                activation_dict.clear()
+
                 # broadcast them back
                 for i, (work_item, gen) in enumerate(zip(batch, generations)):
 
@@ -241,7 +243,6 @@ def batching_loop(timeout=100, max_tokens=MAX_BATCH_TOKENS):
                     work_item.return_queue.put((work_item.uid, gen))
 
                 act_ret_dict.clear()
-                activation_dict.clear()
                 batch_dict.clear()
             else:
                 # back to the loop

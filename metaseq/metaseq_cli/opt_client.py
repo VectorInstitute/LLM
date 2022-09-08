@@ -144,7 +144,7 @@ if __name__ == "__main__":
 
     act = c.get_activations(
         ["Today is a beautiful day and I want to"],
-        [
-            "decoder.layers.8.self_attn.qkv_proj",
-        ],
+        c.module_names,
     )
+
+    breakpoint()
