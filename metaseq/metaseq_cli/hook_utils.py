@@ -27,6 +27,17 @@ def apply_forward_hook(model, hook_dict):
 
         all_hooks.clear()
 
+def get_activation_capture_hook_dict(model, desired_module_activations):
+    activation_dict, hook_dict = {}, {}
+
+    desired_module_activations = set(desired_module_activations)
+
+    for n, m in model.named_modules():
+        if n in desired_module_activations:
+            hook_dict[n] = partial(forward_hook_fn, n, activation_dict)
+
+    return hook_dict, activation_dict
+
 
 def forward_hook_fn(registered_name, save_dict, m, _, outputs):
     # NOTE: don't touch the inputs! THEY MIGHT BE WRONG
@@ -60,15 +71,3 @@ def forward_hook_fn(registered_name, save_dict, m, _, outputs):
 
         # only save it on rank 0
         save_dict[registered_name] = output.detach().cpu()
-
-
-def get_activation_capture_hook_dict(model, desired_module_activations):
-    activation_dict, hook_dict = {}, {}
-
-    desired_module_activations = set(desired_module_activations)
-
-    for n, m in model.named_modules():
-        if n in desired_module_activations:
-            hook_dict[n] = partial(forward_hook_fn, n, activation_dict)
-
-    return hook_dict, activation_dict

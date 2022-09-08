@@ -697,6 +697,7 @@ class GeneratorInterface:
                         # or evaluating PPL on just a subset of tokens
                         "text_offset": token_offsets,
                         "token_scores": scores_with_eos,
+                        # always send back all the tokens except for the Start of Sequence
                         "all_tokens": uncut_tokens[1:],
                         "all_tokens_text": [
                             self.bpe.bpe.decode([t]) for t in uncut_tokens[1:]
@@ -768,5 +769,5 @@ class GeneratorInterface:
 
         # cut off at stop and drop pads
         if distributions is not None:
-            distributions = distributions[mask]
+            distributions = distributions[: len(mask), ...][mask]
         return list(new_tokens), list(new_scores), distributions

@@ -39,12 +39,12 @@ from metaseq.service.constants import (
     DEFAULT_PORT,
     TOTAL_WORLD_SIZE,
     LAUNCH_ARGS,
-    UNBATCHED_ARGS,
+    UNBATCHED_ARG_DICT,
 )
 from metaseq.service.utils import get_my_ip, encode_fn, build_logger
 from metaseq.service.responses import OAIResponse
 
-from debug_utils import get_activation_capture_hook_dict, apply_forward_hook
+from hook_utils import get_activation_capture_hook_dict, apply_forward_hook
 
 
 app = Flask(__name__)
@@ -86,9 +86,10 @@ def batching_loop(timeout=100, max_tokens=MAX_BATCH_TOKENS):
         try:
             assert len(batch_dict) <= 1
 
-            bs_list = next(iter(batch_dict.values())) if batch_dict else []
+            b_key, bs_list = (
+                next(iter(batch_dict.items())) if batch_dict else (None, [])
+            )
 
-            b_key = next(iter(batch_dict.keys())) if batch_dict else None
             # for now, we only have 1 worker, so can always index to shard 0
             if target_queue is None:
                 # TODO: try to process a request with the same arg
@@ -105,15 +106,17 @@ def batching_loop(timeout=100, max_tokens=MAX_BATCH_TOKENS):
             # fit the max sequence length
             max_prompt_len = max(x.prompt_len for x in [item] + bs_list)
             max_gen_len = max(x.gen_len for x in [item] + bs_list)
-            # TODO: changed this
+
+            # changed this to enable batching
             overflow = max_prompt_len + max_gen_len > MAX_SEQ_LEN
 
-            # naive, as soon as the args are different fire
+            # naive impl, as soon as the args are different fire
             # the previous batch
             if bs_list and (
                 batch_cost > max_tokens
                 or overflow
                 # if the item is not the same arg, flush out the batch
+                # and put back the item that doesn't match
                 or (b_key is not None and b_key != item.queue_key())
             ):
                 # we're over budget, put it back in the queue
@@ -125,6 +128,9 @@ def batching_loop(timeout=100, max_tokens=MAX_BATCH_TOKENS):
         except queue.Empty:
             target_queue = None
             if batch_dict:
+                # because we always flush out the batch as soon as we have a different key
+                # the length of the batch_dict should always be 1
+
                 assert len(batch_dict) == 1
                 (batch,) = batch_dict.values()
 
@@ -147,9 +153,11 @@ def batching_loop(timeout=100, max_tokens=MAX_BATCH_TOKENS):
                         ro.get("max_tokens", MAX_SEQ_LEN)
                     )
 
-                    for key in UNBATCHED_ARGS:
-                        if key in unique_dict and unique_dict[key] != ro[key]:
-                            logger.info(
+                    for key in UNBATCHED_ARG_DICT:
+                        if key in unique_dict and unique_dict[key] != ro.get(
+                            key, unique_dict[key]
+                        ):
+                            raise ValueError(
                                 "the remaining args are not the same, currently {}, but want {} with key {}".format(
                                     unique_dict,
                                     ro[key],
@@ -162,12 +170,13 @@ def batching_loop(timeout=100, max_tokens=MAX_BATCH_TOKENS):
                             unique_dict[key] = ro[key]
 
                         else:
-                            # if key not in ro then it should take None
-                            unique_dict[key] = None
+                            # if key not in ro then it should take default value
+                            unique_dict[key] = UNBATCHED_ARG_DICT[key]
 
                 # WARNING: seed will not be deterministic when we batch
-                if "seed" not in request_object:
-                    request_object["seed"] = random.randint(0, 20000)
+                # TODO: do we include the seed or not? we can't guarantee the correctness of this parameter anyway
+                # if "seed" not in request_object:
+                request_object["seed"] = random.randint(0, 20000)
 
                 if torch.distributed.get_rank() == 0:
                     logger.info("request object {}".format(request_object))
@@ -218,11 +227,11 @@ def batching_loop(timeout=100, max_tokens=MAX_BATCH_TOKENS):
 
                         # need the clone because otherwise the views are shared
                         # and will need to be transferred
-                        # TODO: this is padded RIGHT
+                        # this is padded RIGHT
                         gen[0]["activations"] = {
                             k: codecs.encode(
                                 # cut off the starting token because metaseq
-                                # adds it should take out the pad to reduce bandwidth
+                                # adds. It should take out the pad to reduce bandwidth
                                 pickle.dumps(v[1 : num_real_tokens + 1, i].clone()),
                                 "base64",
                             ).decode("utf-8")
@@ -389,6 +398,7 @@ def completions(engine=None):
     assert isinstance(prompts[0], list)
     # final case: multi pre-tokenized
     assert len(prompts[0]) > 0
+    print(prompts)
 
     if "min_tokens" in generation_args:
         generation_args["min_tokens"] = int(generation_args["min_tokens"])
@@ -406,16 +416,16 @@ def completions(engine=None):
     if "temperature" in generation_args:
         generation_args["temperature"] = round(float(generation_args["temperature"]), 1)
     else:
-        generation_args["temperature"] = 1.0
+        generation_args["temperature"] = UNBATCHED_ARG_DICT["temperature"]
     if "top_p" in generation_args:
         generation_args["top_p"] = round(float(generation_args["top_p"]), 1)
     else:
-        generation_args["top_p"] = 1.0
+        generation_args["top_p"] = UNBATCHED_ARG_DICT["top_p"]
     # beam search top n
     if "n" in generation_args:
         generation_args["n"] = min(MAX_BEAM, max(1, int(generation_args["n"])))
     else:
-        generation_args["n"] = 1
+        generation_args["n"] = UNBATCHED_ARG_DICT["n"]
 
     ret_queue = queue.Queue()
     for i, prompt in enumerate(prompts):
