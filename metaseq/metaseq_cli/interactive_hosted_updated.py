@@ -212,12 +212,11 @@ def batching_loop(timeout=100, max_tokens=MAX_BATCH_TOKENS):
                     # propagate any exceptions to the response so we can report it
                     generations = [e] * len(batch)
 
-                act_ret_dict = {}
+                # activations should come in as B x S x D
+                # do this in the forward hooks
                 for k, v in activation_dict.items():
-                    # S x B x D
-                    act_ret_dict[k] = v.view(-1, len(batch), v.size(-1))
-
-                activation_dict.clear()
+                    # TODO: remove heuristic check
+                    assert v.size(0) == len(batch), f"{k} looks like it fails the [B...] invariant"
 
                 # broadcast them back
                 for i, (work_item, gen) in enumerate(zip(batch, generations)):
@@ -234,17 +233,15 @@ def batching_loop(timeout=100, max_tokens=MAX_BATCH_TOKENS):
                             k: codecs.encode(
                                 # cut off the starting token because metaseq
                                 # adds. It should take out the pad to reduce bandwidth
-                                pickle.dumps(
-                                    v[1 : num_real_tokens + 1, i].clone()
-                                ),
+                                pickle.dumps(v[i, 1 : num_real_tokens + 1].clone()),
                                 "base64",
                             ).decode("utf-8")
-                            for k, v in act_ret_dict.items()
+                            for k, v in activation_dict.items()
                         }
 
                     work_item.return_queue.put((work_item.uid, gen))
 
-                act_ret_dict.clear()
+                activation_dict.clear()
                 batch_dict.clear()
             else:
                 # back to the loop
