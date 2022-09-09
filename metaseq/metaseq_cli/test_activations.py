@@ -7,8 +7,8 @@ from opt_client import Client
 
 prompts = [
     "Today is a beautiful day and I want to",
-    # "what is the meaning of life?",
-    # "vector matrix",
+    "what is the meaning of life?",
+    "vector matrix",
 ]
 
 
