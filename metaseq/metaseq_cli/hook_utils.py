@@ -68,13 +68,13 @@ def forward_hook_fn(registered_name, save_dict, m, _, outputs):
             output = gather_from_tensor_model_parallel_region(outputs[0])
 
         if m.skip_bias_add:
-            output.add_(outputs[1])
+            output = output + outputs[1]
 
     elif type_m == RowParallelLinear:
         output = outputs[0]
 
         if m.skip_bias_add:
-            output.add_(outputs[1])
+            output = output + outputs[1]
 
     elif type_m in (
         ModelParallelTransformerDecoder,
@@ -88,7 +88,7 @@ def forward_hook_fn(registered_name, save_dict, m, _, outputs):
         output, attn_bias = outputs[0]
 
         if attn_bias is not None:
-            output.add_(attn_bias)
+            output = output + attn_bias
 
     # best effort kind of thing
     else:
