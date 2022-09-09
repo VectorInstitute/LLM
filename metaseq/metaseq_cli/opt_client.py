@@ -112,7 +112,6 @@ class Client:
         output = []
 
         for target_len, tok_probs in zip(target_tok_lens, tok_log_probs):
-            breakpoint()
             output.append(sum(tok_probs[-target_len:]))
 
         return output
@@ -136,15 +135,3 @@ class Client:
         ]
 
         return activations
-
-
-if __name__ == "__main__":
-    c = Client("gpu076", 8888)
-    print(c.module_names)
-
-    act = c.get_activations(
-        ["Today is a beautiful day and I want to"],
-        c.module_names,
-    )
-
-    breakpoint()

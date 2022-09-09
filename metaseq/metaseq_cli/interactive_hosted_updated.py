@@ -234,7 +234,9 @@ def batching_loop(timeout=100, max_tokens=MAX_BATCH_TOKENS):
                             k: codecs.encode(
                                 # cut off the starting token because metaseq
                                 # adds. It should take out the pad to reduce bandwidth
-                                pickle.dumps(v[1 : num_real_tokens + 1, i].clone()),
+                                pickle.dumps(
+                                    v[1 : num_real_tokens + 1, i].clone()
+                                ),
                                 "base64",
                             ).decode("utf-8")
                             for k, v in act_ret_dict.items()
