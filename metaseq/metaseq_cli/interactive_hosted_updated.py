@@ -199,8 +199,14 @@ def batching_loop(timeout=100, max_tokens=MAX_BATCH_TOKENS):
                         hook_dict, activation_dict = get_activation_capture_hook_dict(
                             generator.models[0], desired_module_activations
                         )
+                        # TODO: use a better trick to get the batch size into here
+                        activation_dict["_batch_size"] = len(batch)
+
                         with apply_forward_hook(generator.models[0], hook_dict):
                             generations = generator.generate(**request_object)
+
+                        # TODO: sorry ...
+                        activation_dict.pop("_batch_size")
                     else:
                         generations = generator.generate(**request_object)
 
@@ -211,12 +217,6 @@ def batching_loop(timeout=100, max_tokens=MAX_BATCH_TOKENS):
                 except BaseException as e:
                     # propagate any exceptions to the response so we can report it
                     generations = [e] * len(batch)
-
-                # activations should come in as B x S x D
-                # do this in the forward hooks
-                for k, v in activation_dict.items():
-                    # TODO: remove heuristic check
-                    assert v.size(0) == len(batch), f"{k} looks like it fails the [B...] invariant"
 
                 # broadcast them back
                 for i, (work_item, gen) in enumerate(zip(batch, generations)):
@@ -229,15 +229,30 @@ def batching_loop(timeout=100, max_tokens=MAX_BATCH_TOKENS):
                         # need the clone because otherwise the views are shared
                         # and will need to be transferred
                         # this is padded RIGHT
-                        gen[0]["activations"] = {
-                            k: codecs.encode(
+
+                        # activations should come in as B x S x D
+                        ret_dict = {}
+
+                        for k, v in activation_dict.items():
+                            # attention map
+                            if "self_attn.dropout_module" in k:
+                                val = v[
+                                    i,
+                                    :,
+                                    1 : num_real_tokens + 1,
+                                    1 : num_real_tokens + 1,
+                                ].clone()
+                            else:
                                 # cut off the starting token because metaseq
                                 # adds. It should take out the pad to reduce bandwidth
-                                pickle.dumps(v[i, 1 : num_real_tokens + 1].clone()),
+                                val = v[i, 1 : num_real_tokens + 1].clone()
+
+                            ret_dict[k] = codecs.encode(
+                                pickle.dumps(val),
                                 "base64",
                             ).decode("utf-8")
-                            for k, v in activation_dict.items()
-                        }
+
+                        gen[0]["activations"] = ret_dict
 
                     work_item.return_queue.put((work_item.uid, gen))
 

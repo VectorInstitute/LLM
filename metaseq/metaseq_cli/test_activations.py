@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import argparse
 from transformers import OPTForCausalLM
 import torch
 
@@ -6,14 +7,22 @@ from opt_client import Client
 
 
 prompts = [
+    "vector matrix",
+    "nice working with you all :)",
     "Today is a beautiful day and I want to",
     "what is the meaning of life?",
-    "vector matrix",
 ]
 
 
-def main():
-    client = Client("gpu076", 8888)
+def prepare_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--host", type=str, required=True)
+    parser.add_argument("--port", type=int, required=True)
+    return parser.parse_args()
+
+
+def main(args):
+    client = Client(args.host, args.port)
 
     # need to prepend 2 for start of sequence when getting the input_ids
     input_ids_list = [[2] + p for p in client.tokenize(prompts)]
@@ -43,4 +52,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    main(prepare_args())
