@@ -69,6 +69,17 @@ def forward_hook_fn(registered_name, save_dict, m, _, outputs):
                 gather_from_tensor_model_parallel_region(outputs[0]),
                 *outputs[1:],
             )
+    elif type_m == Dropout:
+        if "self_attn" in registered_name:
+            # megatron only gathers the last dim, but we want to
+            # gather on the first dim so we permute it to the end
+            # and then permute it back
+
+            # TODO: we need to clean this up, it depends on the fact
+            # that the previous layer here is sharded
+            outputs = gather_from_tensor_model_parallel_region(
+                rearrange(outputs, "bk s1 s2 -> s1 s2 bk")
+            )
 
     # only rank 0 needs to do the rest
     if torch.distributed.get_rank() != 0:
@@ -123,10 +134,13 @@ def forward_hook_fn(registered_name, save_dict, m, _, outputs):
     elif type_m == Dropout:
         output = outputs
 
-        if "self_attn" in registered_name:
-            ...
-        else:
+        if "self_attn" not in registered_name:
             output = rearrange(output, "s b d -> b s d")
+        else:
+            # TODO: is this correct?
+            output = rearrange(
+                outputs, "s1 s2 (b k) -> b k s1 s2", b=save_dict["_batch_size"]
+            )
 
     # best effort kind of thing
     else:
