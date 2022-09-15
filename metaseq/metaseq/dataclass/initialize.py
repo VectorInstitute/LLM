@@ -9,6 +9,7 @@ import logging
 from hydra.core.config_store import ConfigStore
 
 from metaseq.dataclass.configs import MetaseqConfig
+from metaseq.dataclass.swiss_configs import SwissConfig
 
 logger = logging.getLogger(__name__)
 

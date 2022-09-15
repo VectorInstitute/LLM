@@ -49,6 +49,8 @@ CHECKPOINT_FOLDER = MODEL_FOLDER #os.path.join(MODEL_FOLDER, "reshard_no_os")
 CHECKPOINT_LOCAL = os.path.join(MODEL_FOLDER, "reshard_no_os", "reshard.pt")
 
 LAUNCH_ARGS = [
+    # TODO: Testing swiss
+    "--arch glm_large",
     "--memory-efficient-fp16",
     f"--model-parallel-size {MODEL_PARALLEL}",
     f"--distributed-world-size {TOTAL_WORLD_SIZE}",

@@ -20,7 +20,41 @@ from metaseq.dataclass.configs import (
     OptimizationConfig,
     ReshardConfig,
 )
+from metaseq.dataclass.swiss_configs import (
+    SwissDistributedTrainingConfig,
+    SwissModelConfig,
+    SwissTrainingConfig,
+    SwissEvaluationConfig,
+    SwissDataConfig,
+    SwissTextGenerationConfig,
+    SwissTokenizationConfig,
+)
 from metaseq.dataclass.utils import gen_parser_from_dataclass
+
+
+# TODO: This is not used yet. Make this a config group later
+def get_swiss_parser(default_task="swiss_glm"):
+    """
+    Custom parser for SwissArmyTransformer GLM based on metaseq generation
+    parser
+    """
+    parser = get_parser("Generation", default_task)
+    
+    # Add default metaseq args
+    add_dataset_args(parser, gen=True)
+    add_distributed_training_args(parser, default_world_size=1)
+    add_generation_args(parser)
+    add_checkpoint_args(parser)
+
+    # Add all swiss args
+    add_swiss_distributed_training_args(parser)
+    add_swiss_model_args(parser)
+    add_swiss_training_args(parser)
+    add_swiss_evaluation_args(parser)
+    add_swiss_data_args(parser)
+    add_swiss_text_generation_args(parser)
+    add_swiss_tokenization_args(parser)
+    return parser
 
 
 def get_training_parser(default_task="translation"):
@@ -35,6 +69,8 @@ def get_training_parser(default_task="translation"):
 
 def get_generation_parser(default_task="translation"):
     parser = get_parser("Generation", default_task)
+    # TODO: Testing for loading swiss
+    add_model_args(parser)
     add_dataset_args(parser, gen=True)
     add_distributed_training_args(parser, default_world_size=1)
     add_generation_args(parser)
@@ -131,6 +167,7 @@ def parse_args_and_arch(
             # arguments or which have default values.
             argument_default=argparse.SUPPRESS,
         )
+
         if args.arch in ARCH_MODEL_REGISTRY:
             ARCH_MODEL_REGISTRY[args.arch].add_args(model_specific_group)
         elif args.arch in MODEL_REGISTRY:
@@ -226,6 +263,54 @@ def get_parser(desc, default_task="translation"):
     )
     # fmt: on
     return parser
+
+
+def add_swiss_model_args(parser):
+    """Make swiss model args from config dataclass"""
+    group = parser.add_argument_group("swiss_model")
+    gen_parser_from_dataclass(group, SwissModelConfig())
+    return group
+
+
+def add_swiss_distributed_training_args(parser):
+    """Make swiss distributed training args from config dataclass"""
+    group = parser.add_argument_group("swiss_distributed_training")
+    gen_parser_from_dataclass(group, SwissDistributedTrainingConfig())
+    return group
+
+
+def add_swiss_training_args(parser):
+    """Make swiss training args from config dataclass"""
+    group = parser.add_argument_group("swiss_training")
+    gen_parser_from_dataclass(group, SwissTrainingConfig())
+    return group
+
+
+def add_swiss_evaluation_args(parser):
+    """Make swiss distributed training args from config dataclass"""
+    group = parser.add_argument_group("swiss_evaluation")
+    gen_parser_from_dataclass(group, SwissEvaluationConfig())
+    return group
+
+
+def add_swiss_data_args(parser):
+    """Make swiss data args from config dataclass"""
+    group = parser.add_argument_group("swiss_data")
+    gen_parser_from_dataclass(group, SwissDataConfig())
+    return group
+
+def add_swiss_text_generation_args(parser):
+    """Make swiss text generation args from config dataclass"""
+    group = parser.add_argument_group("swiss_text_generation")
+    gen_parser_from_dataclass(group, SwissTextGenerationConfig())
+    return group
+
+
+def add_swiss_tokenization_args(parser):
+    """Make swiss tokenization args from config dataclass"""
+    group = parser.add_argument_group("swiss_tokenization")
+    gen_parser_from_dataclass(group, SwissTokenizationConfig())
+    return group
 
 
 def add_dataset_args(parser, train=False, gen=False):

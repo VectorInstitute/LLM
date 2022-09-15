@@ -761,6 +761,82 @@ class EvalLMConfig(MetaseqDataclass):
 
 
 @dataclass
+class SwissModelConfig(MetaseqDataclass):
+    num_layers: int = field(
+        default=24,
+        metadata={"help": "Number of decoder layers"}
+    )
+    hidden_size: int = field(
+        default=1024,
+        metadata={"help": "Transformer hidden dim size"}
+    )
+    num_attention_heads: int = field(
+        default=16,
+        metadata={"help": "Number of transformer attention heads"}
+    )
+    vocab_size: int = field(
+        default=0,
+        metadata={"help": "Vocab size for tokenization"}
+    )
+    max_sequence_length: int = field(
+        default=512,
+        metadata={"help": "Max number of position embeddings to use"}
+    )
+    layernorm_order: str = field(
+        default="pre",
+        metadata={"help": "Order of layernorm (post, pre, sandwich)"}
+    )
+    inner_hidden_size: Optional[int] = field(
+        default=None,
+        metadata={"help": "Inner hidden size in MLP, None meaning 4 * hidden size"}
+    )
+    hidden_size_per_attention_head: Optional[int] = field(
+        default=None,
+        metadata={"help": "Hidden size per attention head in self and cross attention. None means hidden_sized / num_attention_heads"}
+    )
+    #model_parallel_size: int = field(
+    #    default=1,
+    #    metadata={"help": "Size of the model parallel"}
+    #)
+    #skip_init: bool = field(
+    #    default=False,
+    #    metadata={"help": "Skip model initialization"}
+    #)
+    use_gpu_initialization: bool = field(
+        default=False,
+        metadata={"help": "Initialize model on GPU"}
+    )
+    layernorm_epsilon: float = field(
+        default=1e-5,
+        metadata={"help": "Layer norm epsilon"}
+    )
+    hidden_dropout: float = field(
+        default=0.1,
+        metadata={"help": "Dropout prob for hidden state"}
+    )
+    attention_dropout: float = field(
+        default=0.1,
+        metadata={"help": "Dropout prob for attention weights"}
+    )
+    make_vocab_size_divisible_by: int = field(
+        default=128,
+        metadata={"help": "Pad the vocab size to be divisible by this value"}
+    )
+    sandwich_ln: bool = field(
+        default=False,
+        metadata={"help": "Add sandwich ln in cogview"}
+    )
+
+
+@dataclass
+class SwissTrainingConfig(MetaseqDataclass):
+    #TODO: Add constant MODE_CHOICES = [finetune, inference]
+    mode: str = field(
+        default="inference",
+        metadata={"help": "pretrain, finetune or inference"}
+    )
+
+@dataclass
 class MetaseqConfig(MetaseqDataclass):
     common: CommonConfig = CommonConfig()
     common_eval: CommonEvalConfig = CommonEvalConfig()
@@ -771,6 +847,11 @@ class MetaseqConfig(MetaseqDataclass):
     generation: GenerationConfig = GenerationConfig()
     eval_lm: EvalLMConfig = EvalLMConfig()
     reshard: ReshardConfig = ReshardConfig()
+
+    # New configs for swiss army transformer
+    #swiss_model: SwissModelConfig = SwissModelConfig()
+    #swiss_training: SwissTrainingConfig = SwissTrainingConfig()
+
     model: Any = MISSING
     task: Any = MISSING
     criterion: Any = MISSING

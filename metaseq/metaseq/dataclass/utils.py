@@ -375,6 +375,10 @@ def convert_namespace_to_omegaconf(args: Namespace) -> DictConfig:
     old_primitive = _utils.is_primitive_type
     _utils.is_primitive_type = lambda _: True
 
+    # New swiss args
+    # TODO: Init MISSING swiss args
+    
+    # Default metaseq args
     if cfg.task is None and getattr(args, "task", None):
         cfg.task = Namespace(**vars(args))
         from metaseq.tasks import TASK_REGISTRY
