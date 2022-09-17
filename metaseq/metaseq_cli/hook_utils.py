@@ -1,3 +1,5 @@
+import logging
+
 import torch
 from einops import rearrange
 
@@ -7,6 +9,8 @@ from megatron.mpu import ColumnParallelLinear, RowParallelLinear
 
 from metaseq.modules.layer_norm import FusedLayerNorm
 from metaseq.modules.dropout import Dropout
+
+from metaseq.distributed import utils as distributed_utils
 
 from metaseq.model_parallel.modules.transformer_layer import (
     ModelParallelTransformerDecoderLayer,
@@ -21,6 +25,9 @@ from metaseq.model_parallel.models.transformer import (
 )
 from contextlib import contextmanager
 from functools import partial
+
+
+logger = logging.getLogger(__name__)
 
 
 @contextmanager
@@ -44,19 +51,21 @@ def apply_forward_hook(model, hook_dict):
         all_hooks.clear()
 
 
-def get_activation_capture_hook_dict(model, desired_module_activations):
+def get_activation_capture_hook_dict(model, desired_module_activations, aux=None):
     activation_dict, hook_dict = {}, {}
 
     desired_module_activations = set(desired_module_activations)
 
+    logger.info("Rank {} with aux: {}".format(torch.distributed.get_rank(), aux))
+
     for n, m in model.named_modules():
         if n in desired_module_activations:
-            hook_dict[n] = partial(forward_hook_fn, n, activation_dict)
+            hook_dict[n] = partial(forward_hook_fn, n, activation_dict, aux)
 
     return hook_dict, activation_dict
 
 
-def forward_hook_fn(registered_name, save_dict, m, _, outputs):
+def forward_hook_fn(registered_name, save_dict, aux, m, _, outputs):
     # NOTE: don't touch the inputs! THEY MIGHT BE WRONG
     # the inputs to the row parallel layers
     # are sharded, so we need to unshard them
@@ -71,15 +80,21 @@ def forward_hook_fn(registered_name, save_dict, m, _, outputs):
             )
     elif type_m == Dropout:
         if "self_attn" in registered_name:
+            # TODO: Newest megatron supports both first and last dim
             # megatron only gathers the last dim, but we want to
             # gather on the first dim so we permute it to the end
             # and then permute it back
 
             # TODO: we need to clean this up, it depends on the fact
             # that the previous layer here is sharded
+            #outputs = rearrange(outputs, "bk s1 s2 -> s1 s2 bk")
+            if not aux:
+                logger.info(
+                    ("Rank {}: Required auxillary data for self-attention maps"
+                    "is not present").format(torch.distributed.get_rank()))
+
             outputs = gather_from_tensor_model_parallel_region(
-                rearrange(outputs, "bk s1 s2 -> s1 s2 bk")
-            )
+                rearrange(outputs, "(b k) s1 s2 -> s1 s2 b k", b=aux[0]))
 
     # only rank 0 needs to do the rest
     if torch.distributed.get_rank() != 0:
@@ -98,8 +113,9 @@ def forward_hook_fn(registered_name, save_dict, m, _, outputs):
         # not always S x B x D, it's only when it's used in qkv_proj
         if layer_type == "qkv_proj":
             output = rearrange(output, "s b d -> b s d")
+
         elif "fc" in layer_type:
-            output = rearrange(output, "(s b) d -> b s d", b=save_dict["_batch_size"])
+            output = rearrange(output, "(s b) d -> b s d", b=aux[0])
 
     elif type_m == RowParallelLinear:
 
@@ -115,7 +131,7 @@ def forward_hook_fn(registered_name, save_dict, m, _, outputs):
             output = rearrange(output, "s b d -> b s d")
 
         elif "fc" in layer_type:
-            output = rearrange(output, "(s b) d -> b s d", b=save_dict["_batch_size"])
+            output = rearrange(output, "(s b) d -> b s d", b=aux[0])
 
     elif type_m in (
         ModelParallelTransformerDecoder,
@@ -136,11 +152,15 @@ def forward_hook_fn(registered_name, save_dict, m, _, outputs):
 
         if "self_attn" not in registered_name:
             output = rearrange(output, "s b d -> b s d")
+
         else:
-            # TODO: is this correct?
-            output = rearrange(
-                outputs, "s1 s2 (b k) -> b k s1 s2", b=save_dict["_batch_size"]
-            )
+            output = rearrange(output, "s1 s2 b k -> b k s1 s2")
+
+    elif type_m == torch.nn.Linear:
+        # Case for decoder.output_projection
+        # TODO: Unhandled, gather_from_tensor_model_parallel_region(outputs) hangs
+        #       Request decoder.output_projection to test
+        output = outputs
 
     # best effort kind of thing
     else:

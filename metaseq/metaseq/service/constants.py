@@ -28,7 +28,7 @@ BATCH_SIZE = 2048  # silly high bc we dynamically batch by MAX_BATCH_TOKENS
 MAX_BATCH_TOKENS = 3072
 MAX_BEAM = 16
 
-DEFAULT_PORT = 8888
+DEFAULT_PORT = 6969
 
 
 # CHECKPOINT_FOLDER should point to a shared drive (e.g. NFS) where the

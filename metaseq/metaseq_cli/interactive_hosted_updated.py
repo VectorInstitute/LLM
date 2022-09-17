@@ -178,6 +178,12 @@ def batching_loop(timeout=100, max_tokens=MAX_BATCH_TOKENS):
                 # if "seed" not in request_object:
                 request_object["seed"] = random.randint(0, 20000)
 
+                # NOTE: aux is a tuple containing any necessary aux data for
+                #       activation retrieval (only batch size right now)
+                # TODO: Is there a better way to do this? Heavily constrained
+                #       by broadcasting to ranks. Can't nest dicts
+                request_object["_aux"] = (len(batch),)
+
                 if torch.distributed.get_rank() == 0:
                     logger.info("request object {}".format(request_object))
 
@@ -195,18 +201,18 @@ def batching_loop(timeout=100, max_tokens=MAX_BATCH_TOKENS):
                         "desired_module_activations", None
                     )
 
+                    act_retrieval_aux = request_object.pop("_aux", None)
+
                     if desired_module_activations:
                         hook_dict, activation_dict = get_activation_capture_hook_dict(
-                            generator.models[0], desired_module_activations
+                            generator.models[0],
+                            desired_module_activations,
+                            aux=act_retrieval_aux,
                         )
-                        # TODO: use a better trick to get the batch size into here
-                        activation_dict["_batch_size"] = len(batch)
 
                         with apply_forward_hook(generator.models[0], hook_dict):
                             generations = generator.generate(**request_object)
 
-                        # TODO: sorry ...
-                        activation_dict.pop("_batch_size")
                     else:
                         generations = generator.generate(**request_object)
 
@@ -280,6 +286,10 @@ def worker_main(cfg1: MetaseqConfig, namespace_args=None):
     generator = GeneratorInterface(cfg)
     models = generator.load_model()  # noqa: F841
 
+    if torch.distributed.get_rank() == 0:
+        print(models[0])    # Cleaner to print
+        logger.info("Model training: {}".format(models[0].training))
+
     assert len(models) == 1
 
     logger.info(f"loaded model {cfg.distributed_training.distributed_rank}")
@@ -304,9 +314,13 @@ def worker_main(cfg1: MetaseqConfig, namespace_args=None):
                 desired_module_activations = request_object.pop(
                     "desired_module_activations", None
                 )
+                act_retrieval_aux = request_object.pop("_aux", None)
+
                 if desired_module_activations:
                     hook_dict, _ = get_activation_capture_hook_dict(
-                        generator.models[0], desired_module_activations
+                        generator.models[0],
+                        desired_module_activations,
+                        aux=act_retrieval_aux,
                     )
 
                     with apply_forward_hook(generator.models[0], hook_dict):
