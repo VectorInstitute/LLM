@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 import argparse
 import logging
+from contextlib import contextmanager
+from functools import partial
 
 from transformers import OPTForCausalLM
+from transformers.models.opt.modeling_opt import OPTDecoderLayer, OPTAttention
 import torch
 
 from opt_client import Client
@@ -15,19 +18,6 @@ def prepare_args():
     parser.add_argument("--host", type=str, required=True)
     parser.add_argument("--port", type=int, required=True)
     return parser.parse_args()
-
-
-def assert_logits_correctness(hf_logits_batched, opt_logits_batched):
-    # TODO: Only works for logits, ie. module list size 1
-    assert len(hf_logits_batched) == len(opt_logits_batched)
-
-    for hf_logits, opt_logits in zip(hf_logits_batched, opt_logits_batched):
-        opt_logits = next(iter(opt_logits.values()))    # Prune one-entry dict
-        assert torch.allclose(
-            hf_logits.cpu().float(),
-            opt_logits.cpu().float(),
-            atol=1e-1
-        ), "Difference in hf and opt logits detected!"
 
 
 def get_hf_logits(client, hf_model, prompts):
@@ -64,16 +54,169 @@ def get_hf_activations(client, hf_model, prompts):
 
     return act
 
+@contextmanager
+def apply_forward_hook_hf(model, hook_dict):
+    all_hooks = []
+    for n, m in model.named_modules():
+        if n in hook_dict:
+            all_hooks.append(m.register_forward_hook(hook_dict[n]))
+    try:
+        yield
 
-def get_opt_logits(client, prompts):
-    logits = client.get_activations(prompts, ["decoder"])
-    return logits
+    finally:
+        for h in all_hooks:
+            h.remove()
+
+        all_hooks.clear()
 
 
-def get_opt_activations(client, prompts, module_names):
-    act = client.get_activations(prompts, module_names)
-    return act
+def get_activation_capture_hook_dict_hf(model, desired_module_activations, aux=None):
+    activation_dict, hook_dict = {}, {}
 
+    desired_module_activations = set(desired_module_activations)
+
+    for n, m in model.named_modules():
+        if n in desired_module_activations:
+            hook_dict[n] = partial(forward_hook_fn, n, activation_dict, aux)
+
+    return hook_dict, activation_dict
+
+
+def forward_hook_fn(registered_name, save_dict, aux, m, _, outputs):
+    type_m = type(m)
+
+    if type_m == OPTAttention:
+        output = outputs[0] # (attn_out, attn_weights_reshaped, past_key_values)
+
+    save_dict[registered_name] = output.detach().cpu()
+
+
+def init_opt_hf_mappings(num_layers):
+    # mappings is a dict of equivalent layer types as keys, where the values
+    # are 1. A list of (sub)module names for forward hooks, or 2. A list
+    # containing "custom" as the first entry, and a function which formats the
+    # collection of output activations
+    opt_mappings = {
+        "transformer_layers": [f"decoder.layers.{i}" for i in range(num_layers - 1)] + ["decoder.layer_norm"],
+        "attention_maps": [f"decoder.layers.{i}.self_attn.dropout_module" for i in range(num_layers)],
+        "self_attention": [f"decoder.layers.{i}.self_attn" for i in range(num_layers)],
+        "logits": ["decoder"],
+    }
+    hf_mappings = {
+        "transformer_layers": [
+            "custom",
+            get_hf_activations,
+            lambda output: output["hidden_states"][1:]],
+        "attention_maps": [
+            "custom",
+            get_hf_activations,
+            lambda output: output["attentions"]],
+        "self_attention": [f"model.decoder.layers.{i}.self_attn" for i in range(num_layers)],
+        "logits": [
+            "custom",
+            get_hf_logits,
+            lambda output: [output]],
+    }
+    return opt_mappings, hf_mappings
+
+
+def retrieve_opt_activations(mapping, client, prompts):
+    if "custom" in mapping:
+        raise NotImplementedError
+    else:
+        module_names = mapping
+
+    acts = client.get_activations(prompts, module_names)
+
+    def _format_results(activations_batched):
+        result = {n: [] for n in module_names}
+        for acts in activations_batched:
+            for name in module_names:
+                result[name].append(acts[name])
+
+        # Can't torch.stack along new batch axis since prompt length is dynamic
+        return result
+
+    acts = _format_results(acts)
+    return acts
+
+
+def retrieve_hf_activations(mapping, client, model, prompts):
+    # Helper functions for hooked activations
+    def _retrieve_hooked_acts(client, model, prompts, module_names):
+        hook_dict, acts = get_activation_capture_hook_dict_hf(
+            model,
+            module_names,
+            aux=None,
+        )
+        with apply_forward_hook_hf(model, hook_dict):
+            results = get_hf_logits(client, model, prompts)
+
+        return acts
+
+    def _format_hooked_acts(hf_results, module_names):
+        results = []
+        for name in module_names:
+            results.append(hf_results[name])
+
+        return results
+
+    # Use provided retrieval and formatting fns
+    if "custom" in mapping:
+        module_names = None
+        retrieval_fn = mapping[1]
+        format_fn = mapping[2]
+
+    # Use forward hooks with formatter
+    else:
+        module_names = mapping
+        retrieval_fn = _retrieve_hooked_acts
+        format_fn = _format_hooked_acts
+
+    if not module_names:
+        # HF has built-in retrieval
+        acts = retrieval_fn(client, model, prompts)
+        acts = format_fn(acts)
+
+    elif module_names:
+        # Need to hook onto HF model for retrieval
+        acts = retrieval_fn(client, model, prompts, module_names)
+        acts = format_fn(acts, module_names)
+
+    else:
+        raise Exception("No valid configuration for HF activation retrieval")
+
+    return acts
+
+
+def assert_activations_correctness(hf_results, opt_results, act_type="transformer_layer"):
+    """
+    Helper function taking HF and OPT activation collections, and
+    makes sure they're allclose
+    """
+    def _assert_allclose(hf_acts, opt_acts):
+        assert torch.allclose(
+            hf_acts.cpu().float(),
+            opt_acts.cpu().float(),
+            atol=1e-1,
+        ), "Difference in hf and opt logits detected"
+
+    for (module_name, opt_acts), hf_acts in zip(opt_results.items(), hf_results):
+        for opt_act, hf_act in zip(opt_acts, hf_acts):
+
+            opt_act = opt_act.detach().cpu().float()
+            hf_act = hf_act.detach().cpu().float()
+
+            if act_type == "transformer_layers" or act_type == "self_attention":
+                bound = slice(1, opt_act.shape[-2] + 1)  # Trim start token and padding
+                hf_act = hf_act[bound]
+
+            elif act_type == "attention_maps":
+                bound = slice(1, opt_act.shape[-2] + 1)  # Trim start token and padding
+                hf_act = hf_act[:, bound, bound]
+
+            _assert_allclose(hf_act, opt_act)
+                
 
 def main(args):
     # Make client connection
@@ -89,75 +232,17 @@ def main(args):
         "what is the meaning of life?",
     ]
 
-    # NOTE: Huggingface seems to apply the final layer norm on the last hidden state,
-    # ie. decoder.layers.11, so we also have to take the output of the final
-    # layer norm in OPT
-    module_names_for_transformer_layer_outputs = [f"decoder.layers.{i}" for i in range(len(hf_model.model.decoder.layers) - 1)]
-    module_names_for_transformer_layer_outputs += ["decoder.layer_norm"]
-    module_names_for_attention_maps = [f"decoder.layers.{i}.self_attn.dropout_module" for i in range(len(hf_model.model.decoder.layers))]
+    opt_mappings, hf_mappings = init_opt_hf_mappings(len(hf_model.model.decoder.layers))
 
-    # Get logits from hf and remote opt models and test allclose
-    hf_logits = get_hf_logits(client, hf_model, prompts)
-    opt_logits = get_opt_logits(client, prompts)
-    assert_logits_correctness(hf_logits, opt_logits)
+    for (opt_type, opt_map), (hf_type, hf_map) in zip(opt_mappings.items(), hf_mappings.items()):
+        assert opt_type == hf_type
 
-    # Get transformer layer hidden output states/activations
-    def transpose_opt_results(activations_batched, module_names):
-        """
-        Transposes the batched activations dictionary.
+        opt_acts = retrieve_opt_activations(opt_map, client, prompts)
+        hf_acts = retrieve_hf_activations(hf_map, client, hf_model, prompts)
 
-        OPT activations have batch size in outer dim and layer # as inner
-        dim which mismatches HF activations
-        """
-        result = {n: [] for n in module_names}
-        for acts in activations_batched:
-            for name in module_names:
-                result[name].append(acts[name])
-        return result
-
-    def assert_activations_correctness(hf_results, opt_results, act_type="transformer_layer"):
-        """
-        Helper function taking HF and OPT activation collections, and
-        makes sure they're allclose
-        """
-        for (module_name, opt_acts), hf_acts in zip(opt_results.items(), hf_results):
-            for opt_act, hf_act in zip(opt_acts, hf_acts):
-
-                opt_act = opt_act.detach().cpu().float()
-                hf_act = hf_act.detach().cpu().float()
-
-                if act_type == "transformer_layer":
-                    bound = slice(1, opt_act.shape[-2] + 1)  # Trim start token and padding
-                    hf_act = hf_act[bound]
-
-                elif act_type == "attention_maps":
-                    bound = slice(1, opt_act.shape[-2] + 1)  # Trim start token and padding
-                    hf_act = hf_act[:, bound, bound]
-
-                else:
-                    raise NotImplementedError("Activation assertion only "
-                                              "supports transformer and attention "
-                                              "map comparisons")
-
-                assert torch.allclose(hf_act, opt_act, atol=1e-1), f"all-close failed on {module_name}"
-
-    # Test output of transformer layers
-    opt_acts_batched = get_opt_activations(client, prompts, module_names_for_transformer_layer_outputs)
-    hf_acts_batched = get_hf_activations(client, hf_model, prompts)
-    result_hf_layer_outputs = hf_acts_batched["hidden_states"][1:]  # Trim output of initial embeddings
-    result_opt_layer_outputs = transpose_opt_results(opt_acts_batched, module_names_for_transformer_layer_outputs)
-    assert_activations_correctness(result_hf_layer_outputs, result_opt_layer_outputs, act_type="transformer_layer")
-    logger.info("Transformer layer outputs passed allclose")
-
-    # Test attention maps for each layer
-    opt_attention_maps = get_opt_activations(client, prompts, module_names_for_attention_maps)
-    result_opt_attention_maps = transpose_opt_results(opt_attention_maps, module_names_for_attention_maps)
-    result_hf_attention_maps = hf_acts_batched["attentions"]
-    assert_activations_correctness(result_hf_attention_maps, result_opt_attention_maps, act_type="attention_maps")
-    logger.info("Attention maps passed allclose")
+        assert_activations_correctness(hf_acts, opt_acts, act_type=opt_type)
 
     breakpoint()
-
 
 if __name__ == "__main__":
     main(prepare_args())

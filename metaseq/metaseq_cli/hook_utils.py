@@ -1,30 +1,25 @@
+from contextlib import contextmanager
+from functools import partial
 import logging
 
 import torch
 from einops import rearrange
 
 from megatron.mpu.mappings import gather_from_tensor_model_parallel_region
-
 from megatron.mpu import ColumnParallelLinear, RowParallelLinear
-
 from metaseq.modules.layer_norm import FusedLayerNorm
 from metaseq.modules.dropout import Dropout
-
 from metaseq.distributed import utils as distributed_utils
-
 from metaseq.model_parallel.modules.transformer_layer import (
     ModelParallelTransformerDecoderLayer,
 )
-
 from metaseq.model_parallel.modules.multihead_attention import (
     ModelParallelMultiheadAttention,
 )
-
 from metaseq.model_parallel.models.transformer import (
     ModelParallelTransformerDecoder,
 )
-from contextlib import contextmanager
-from functools import partial
+
 
 
 logger = logging.getLogger(__name__)
@@ -95,6 +90,10 @@ def forward_hook_fn(registered_name, save_dict, aux, m, _, outputs):
 
             outputs = gather_from_tensor_model_parallel_region(
                 rearrange(outputs, "(b k) s1 s2 -> s1 s2 b k", b=aux[0]))
+
+    elif type_m == torch.nn.Linear:
+        # TODO: This works, need to test against HF
+        outputs = gather_from_tensor_model_parallel_region(outputs)
 
     # only rank 0 needs to do the rest
     if torch.distributed.get_rank() != 0:
