@@ -115,7 +115,6 @@ def forward_hook_fn(registered_name, save_dict, aux, m, _, outputs):
             output = rearrange(output, "s b d -> b s d")
 
         elif layer_type in ["q_proj", "k_proj", "v_proj"]:
-            logger.info(f"{layer_type}: {output.shape}")
             output = rearrange(output, "s b d -> b s d")
 
         elif "fc" in layer_type:
