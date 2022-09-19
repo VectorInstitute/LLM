@@ -54,6 +54,7 @@ def get_hf_activations(client, hf_model, prompts):
 
     return act
 
+
 @contextmanager
 def apply_forward_hook_hf(model, hook_dict):
     all_hooks = []
@@ -88,6 +89,9 @@ def forward_hook_fn(registered_name, save_dict, aux, m, _, outputs):
     if type_m == OPTAttention:
         output = outputs[0] # (attn_out, attn_weights_reshaped, past_key_values)
 
+    elif type_m == torch.nn.LayerNorm:
+        output = outputs
+
     save_dict[registered_name] = output.detach().cpu()
 
 
@@ -100,6 +104,7 @@ def init_opt_hf_mappings(num_layers):
         "transformer_layers": [f"decoder.layers.{i}" for i in range(num_layers - 1)] + ["decoder.layer_norm"],
         "attention_maps": [f"decoder.layers.{i}.self_attn.dropout_module" for i in range(num_layers)],
         "self_attention": [f"decoder.layers.{i}.self_attn" for i in range(num_layers)],
+        "self_attention_layer_norm": [f"decoder.layers.{i}.self_attn_layer_norm" for i in range(num_layers)],
         "logits": ["decoder"],
     }
     hf_mappings = {
@@ -112,6 +117,7 @@ def init_opt_hf_mappings(num_layers):
             get_hf_activations,
             lambda output: output["attentions"]],
         "self_attention": [f"model.decoder.layers.{i}.self_attn" for i in range(num_layers)],
+        "self_attention_layer_norm": [f"model.decoder.layers.{i}.self_attn_layer_norm" for i in range(num_layers)],
         "logits": [
             "custom",
             get_hf_logits,
@@ -121,6 +127,11 @@ def init_opt_hf_mappings(num_layers):
 
 
 def retrieve_opt_activations(mapping, client, prompts):
+    """
+    Run OPT model to get activations, given by the module names in
+    mapping. Format the resulting activations to match the HF activation
+    colletion.
+    """
     if "custom" in mapping:
         raise NotImplementedError
     else:
@@ -142,6 +153,13 @@ def retrieve_opt_activations(mapping, client, prompts):
 
 
 def retrieve_hf_activations(mapping, client, model, prompts):
+    """
+    Get the activations from a HF model. HF models can output logits, 
+    attention maps, and the outputs of decoder transformer layers without
+    forward hooks. However, if there are module names provided
+    in the mapping, use forward hooks to retrieve the activations. Format the
+    return value as specified in the mapping.
+    """
     # Helper functions for hooked activations
     def _retrieve_hooked_acts(client, model, prompts, module_names):
         hook_dict, acts = get_activation_capture_hook_dict_hf(
@@ -149,25 +167,27 @@ def retrieve_hf_activations(mapping, client, model, prompts):
             module_names,
             aux=None,
         )
+
         with apply_forward_hook_hf(model, hook_dict):
             results = get_hf_logits(client, model, prompts)
 
         return acts
 
     def _format_hooked_acts(hf_results, module_names):
+        """Standard formatter for forward hooks."""
         results = []
         for name in module_names:
             results.append(hf_results[name])
 
         return results
 
-    # Use provided retrieval and formatting fns
+    # Case 1: Use provided retrieval and formatting functions
     if "custom" in mapping:
         module_names = None
         retrieval_fn = mapping[1]
         format_fn = mapping[2]
 
-    # Use forward hooks with formatter
+    # Case 2: Use forward hooks with standard formatter
     else:
         module_names = mapping
         retrieval_fn = _retrieve_hooked_acts
@@ -194,20 +214,36 @@ def assert_activations_correctness(hf_results, opt_results, act_type="transforme
     Helper function taking HF and OPT activation collections, and
     makes sure they're allclose
     """
-    def _assert_allclose(hf_acts, opt_acts):
-        assert torch.allclose(
-            hf_acts.cpu().float(),
-            opt_acts.cpu().float(),
-            atol=1e-1,
-        ), "Difference in hf and opt logits detected"
+    def _assert_allclose_and_get_summed_diff(hf_acts, opt_acts):
+        def _get_diff(x, y):
+            return (x - y).sum() / x.numel()
 
+        hf_acts = hf_acts.cpu().float()
+        opt_acts = opt_acts.cpu().float()
+
+        diff = _get_diff(hf_acts, opt_acts)
+
+        if torch.allclose(hf_acts, opt_acts, atol=1e-1):
+            return diff
+
+        else:
+            raise Exception("Large diff in {}: {}".format(act_type, diff))
+    
+
+    total_diff = 0.0
     for (module_name, opt_acts), hf_acts in zip(opt_results.items(), hf_results):
         for opt_act, hf_act in zip(opt_acts, hf_acts):
 
             opt_act = opt_act.detach().cpu().float()
             hf_act = hf_act.detach().cpu().float()
 
-            if act_type == "transformer_layers" or act_type == "self_attention":
+            # NOTE: Need to dynamically trim HF returned activations per
+            #       example rather than batch. HF pads until max sequence length.
+            if act_type in [
+                    "transformer_layers",
+                    "self_attention",
+                    "self_attention_layer_norm",
+            ]:
                 bound = slice(1, opt_act.shape[-2] + 1)  # Trim start token and padding
                 hf_act = hf_act[bound]
 
@@ -215,7 +251,15 @@ def assert_activations_correctness(hf_results, opt_results, act_type="transforme
                 bound = slice(1, opt_act.shape[-2] + 1)  # Trim start token and padding
                 hf_act = hf_act[:, bound, bound]
 
-            _assert_allclose(hf_act, opt_act)
+            elif act_type == "logits":
+                pass
+
+            else:
+                raise NotImplementedError
+
+            total_diff += _assert_allclose_and_get_summed_diff(hf_act, opt_act) 
+
+    print("{} has average diff: {}".format(act_type, total_diff))
                 
 
 def main(args):
@@ -242,7 +286,6 @@ def main(args):
 
         assert_activations_correctness(hf_acts, opt_acts, act_type=opt_type)
 
-    breakpoint()
 
 if __name__ == "__main__":
     main(prepare_args())
