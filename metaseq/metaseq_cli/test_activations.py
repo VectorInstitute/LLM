@@ -4,6 +4,7 @@ import logging
 from contextlib import contextmanager
 from functools import partial
 
+from einops import rearrange
 from transformers import OPTForCausalLM
 from transformers.models.opt.modeling_opt import OPTDecoderLayer, OPTAttention
 import torch
@@ -11,6 +12,9 @@ import torch
 from opt_client import Client
 
 logger = logging.getLogger(__name__)
+
+
+BATCH_SIZE = 4  # So we don't need to use aux in HF forward hooks
 
 
 def prepare_args():
@@ -85,12 +89,24 @@ def get_activation_capture_hook_dict_hf(model, desired_module_activations, aux=N
 
 def forward_hook_fn(registered_name, save_dict, aux, m, _, outputs):
     type_m = type(m)
+    layer_type = registered_name.split(".")[-1] # In the case of duplicate types
 
     if type_m == OPTAttention:
         output = outputs[0] # (attn_out, attn_weights_reshaped, past_key_values)
 
     elif type_m == torch.nn.LayerNorm:
-        output = outputs
+        if layer_type == "final_layer_norm":
+            output = rearrange(outputs, "(b s) h -> b s h", b=BATCH_SIZE)
+
+        else:
+            output = outputs
+
+    elif type_m == torch.nn.Linear:
+        if layer_type in ["q_proj", "k_proj", "v_proj"]:
+            output = outputs
+
+        else:
+            output = rearrange(outputs, "(b s) h -> b s h", b=BATCH_SIZE)
 
     save_dict[registered_name] = output.detach().cpu()
 
@@ -104,7 +120,13 @@ def init_opt_hf_mappings(num_layers):
         "transformer_layers": [f"decoder.layers.{i}" for i in range(num_layers - 1)] + ["decoder.layer_norm"],
         "attention_maps": [f"decoder.layers.{i}.self_attn.dropout_module" for i in range(num_layers)],
         "self_attention": [f"decoder.layers.{i}.self_attn" for i in range(num_layers)],
+        "q_proj": [f"decoder.layers.{i}.self_attn.q_proj" for i in range(num_layers)],
+        "k_proj": [f"decoder.layers.{i}.self_attn.k_proj" for i in range(num_layers)],
+        "v_proj": [f"decoder.layers.{i}.self_attn.v_proj" for i in range(num_layers)],
         "self_attention_layer_norm": [f"decoder.layers.{i}.self_attn_layer_norm" for i in range(num_layers)],
+        "fc1": [f"decoder.layers.{i}.fc1" for i in range(num_layers)],
+        "fc2": [f"decoder.layers.{i}.fc2" for i in range(num_layers)],
+        "final_layer_norm": [f"decoder.layers.{i}.final_layer_norm" for i in range(num_layers)],
         "logits": ["decoder"],
     }
     hf_mappings = {
@@ -117,7 +139,13 @@ def init_opt_hf_mappings(num_layers):
             get_hf_activations,
             lambda output: output["attentions"]],
         "self_attention": [f"model.decoder.layers.{i}.self_attn" for i in range(num_layers)],
+        "q_proj": [f"model.decoder.layers.{i}.self_attn.q_proj" for i in range(num_layers)],
+        "k_proj": [f"model.decoder.layers.{i}.self_attn.k_proj" for i in range(num_layers)],
+        "v_proj": [f"model.decoder.layers.{i}.self_attn.v_proj" for i in range(num_layers)],
         "self_attention_layer_norm": [f"model.decoder.layers.{i}.self_attn_layer_norm" for i in range(num_layers)],
+        "fc1": [f"model.decoder.layers.{i}.fc1" for i in range(num_layers)],
+        "fc2": [f"model.decoder.layers.{i}.fc2" for i in range(num_layers)],
+        "final_layer_norm": [f"model.decoder.layers.{i}.final_layer_norm" for i in range(num_layers)],
         "logits": [
             "custom",
             get_hf_logits,
@@ -237,19 +265,30 @@ def assert_activations_correctness(hf_results, opt_results, act_type="transforme
             opt_act = opt_act.detach().cpu().float()
             hf_act = hf_act.detach().cpu().float()
 
+            bound = slice(1, opt_act.shape[-2] + 1)  # Trim start token and padding
+
             # NOTE: Need to dynamically trim HF returned activations per
             #       example rather than batch. HF pads until max sequence length.
             if act_type in [
                     "transformer_layers",
+                    "q_proj",
+                    "k_proj",
+                    "v_proj",
                     "self_attention",
                     "self_attention_layer_norm",
+                    "fc1",
+                    "fc2",
+                    "final_layer_norm",
             ]:
-                bound = slice(1, opt_act.shape[-2] + 1)  # Trim start token and padding
                 hf_act = hf_act[bound]
 
             elif act_type == "attention_maps":
-                bound = slice(1, opt_act.shape[-2] + 1)  # Trim start token and padding
                 hf_act = hf_act[:, bound, bound]
+
+            # TODO: This is not comparable to HF q, k, v activations. qkv need
+            #       to be split in OPT
+            elif act_type == "qkv_proj":
+                raise NotImplementedError
 
             elif act_type == "logits":
                 pass

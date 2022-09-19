@@ -51,7 +51,7 @@ def get_activation_capture_hook_dict(model, desired_module_activations, aux=None
 
     desired_module_activations = set(desired_module_activations)
 
-    logger.info("Rank {} with aux: {}".format(torch.distributed.get_rank(), aux))
+    #logger.info("Rank {} with aux: {}".format(torch.distributed.get_rank(), aux))
 
     for n, m in model.named_modules():
         if n in desired_module_activations:
@@ -110,7 +110,12 @@ def forward_hook_fn(registered_name, save_dict, aux, m, _, outputs):
         layer_type = registered_name.split(".")[-1]
 
         # not always S x B x D, it's only when it's used in qkv_proj
+        # NOTE: OPT's qkv_proj combined projection is hard to compare with HF
         if layer_type == "qkv_proj":
+            output = rearrange(output, "s b d -> b s d")
+
+        elif layer_type in ["q_proj", "k_proj", "v_proj"]:
+            logger.info(f"{layer_type}: {output.shape}")
             output = rearrange(output, "s b d -> b s d")
 
         elif "fc" in layer_type:

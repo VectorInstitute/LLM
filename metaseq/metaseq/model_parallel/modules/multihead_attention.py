@@ -92,7 +92,9 @@ class ModelParallelMultiheadAttention(nn.Module):
             not self.self_attention or self.qkv_same_dim
         ), "Self-attention requires query, key and value to be of the same size"
 
-        self.combine_qkv_proj = True
+        # TODO: Add this as a config later on. This is used so that OPT is
+        #       comparable with HF activation-wise
+        self.combine_qkv_proj = False
         if self.combine_qkv_proj:
 
             def _init_method_weight_cpu(weight):
