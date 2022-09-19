@@ -6,7 +6,11 @@ from functools import partial
 
 from einops import rearrange
 from transformers import OPTForCausalLM
-from transformers.models.opt.modeling_opt import OPTDecoderLayer, OPTAttention
+from transformers.models.opt.modeling_opt import (
+    OPTDecoderLayer,
+    OPTAttention,
+    OPTLearnedPositionalEmbedding,
+)
 import torch
 
 from opt_client import Client
@@ -91,11 +95,15 @@ def forward_hook_fn(registered_name, save_dict, aux, m, _, outputs):
     type_m = type(m)
     layer_type = registered_name.split(".")[-1] # In the case of duplicate types
 
-    if type_m == OPTAttention:
+    if type_m == torch.nn.Embedding or type_m == OPTLearnedPositionalEmbedding:
+        output = outputs
+
+    elif type_m == OPTAttention:
         output = outputs[0] # (attn_out, attn_weights_reshaped, past_key_values)
 
     elif type_m == torch.nn.LayerNorm:
-        if layer_type == "final_layer_norm":
+        # Having "layers" in the name means m is a per-module layer norm
+        if layer_type == "final_layer_norm" and "layers" in registered_name:
             output = rearrange(outputs, "(b s) h -> b s h", b=BATCH_SIZE)
 
         else:
@@ -117,6 +125,8 @@ def init_opt_hf_mappings(num_layers):
     # containing "custom" as the first entry, and a function which formats the
     # collection of output activations
     opt_mappings = {
+        "embed_tokens": ["decoder.embed_tokens"],
+        "embed_positions": ["decoder.embed_positions"],
         "transformer_layers": [f"decoder.layers.{i}" for i in range(num_layers - 1)] + ["decoder.layer_norm"],
         "attention_maps": [f"decoder.layers.{i}.self_attn.dropout_module" for i in range(num_layers)],
         "self_attention": [f"decoder.layers.{i}.self_attn" for i in range(num_layers)],
@@ -126,10 +136,13 @@ def init_opt_hf_mappings(num_layers):
         "self_attention_layer_norm": [f"decoder.layers.{i}.self_attn_layer_norm" for i in range(num_layers)],
         "fc1": [f"decoder.layers.{i}.fc1" for i in range(num_layers)],
         "fc2": [f"decoder.layers.{i}.fc2" for i in range(num_layers)],
-        "final_layer_norm": [f"decoder.layers.{i}.final_layer_norm" for i in range(num_layers)],
+        "decoder_layer_norm": [f"decoder.layers.{i}.final_layer_norm" for i in range(num_layers)],
+        "output_layer_norm": ["decoder.layer_norm"],
         "logits": ["decoder"],
     }
     hf_mappings = {
+        "embed_tokens": ["model.decoder.embed_tokens"],
+        "embed_positions": ["model.decoder.embed_positions"],
         "transformer_layers": [
             "custom",
             get_hf_activations,
@@ -145,7 +158,8 @@ def init_opt_hf_mappings(num_layers):
         "self_attention_layer_norm": [f"model.decoder.layers.{i}.self_attn_layer_norm" for i in range(num_layers)],
         "fc1": [f"model.decoder.layers.{i}.fc1" for i in range(num_layers)],
         "fc2": [f"model.decoder.layers.{i}.fc2" for i in range(num_layers)],
-        "final_layer_norm": [f"model.decoder.layers.{i}.final_layer_norm" for i in range(num_layers)],
+        "decoder_layer_norm": [f"model.decoder.layers.{i}.final_layer_norm" for i in range(num_layers)],
+        "output_layer_norm": [f"model.decoder.final_layer_norm"],
         "logits": [
             "custom",
             get_hf_logits,
@@ -270,6 +284,8 @@ def assert_activations_correctness(hf_results, opt_results, act_type="transforme
             # NOTE: Need to dynamically trim HF returned activations per
             #       example rather than batch. HF pads until max sequence length.
             if act_type in [
+                    "embed_tokens",
+                    "embed_positions",
                     "transformer_layers",
                     "q_proj",
                     "k_proj",
@@ -278,7 +294,8 @@ def assert_activations_correctness(hf_results, opt_results, act_type="transforme
                     "self_attention_layer_norm",
                     "fc1",
                     "fc2",
-                    "final_layer_norm",
+                    "decoder_layer_norm",
+                    "output_layer_norm",
             ]:
                 hf_act = hf_act[bound]
 
@@ -290,7 +307,7 @@ def assert_activations_correctness(hf_results, opt_results, act_type="transforme
             elif act_type == "qkv_proj":
                 raise NotImplementedError
 
-            elif act_type == "logits":
+            elif act_type == "logits":  # TODO: Logits has a custom retrieval
                 pass
 
             else:
