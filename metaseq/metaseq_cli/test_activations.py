@@ -124,6 +124,8 @@ def init_opt_hf_mappings(num_layers):
     # are 1. A list of (sub)module names for forward hooks, or 2. A list
     # containing "custom" as the first entry, and a function which formats the
     # collection of output activations
+    # NOTE: Activation function outputs cannot be compared, since OPT uses
+    #       FusedLayerNorm layers
     opt_mappings = {
         "embed_tokens": ["decoder.embed_tokens"],
         "embed_positions": ["decoder.embed_positions"],
