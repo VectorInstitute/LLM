@@ -2,8 +2,8 @@ from contextlib import contextmanager
 from functools import partial
 import logging
 
-import torch
 from einops import rearrange
+import torch
 
 from megatron.mpu.mappings import gather_from_tensor_model_parallel_region
 from megatron.mpu import ColumnParallelLinear, RowParallelLinear
@@ -19,7 +19,11 @@ from metaseq.model_parallel.modules.multihead_attention import (
 from metaseq.model_parallel.models.transformer import (
     ModelParallelTransformerDecoder,
 )
-
+from transformers.models.opt.modeling_opt import (
+    OPTDecoderLayer,
+    OPTAttention,
+    OPTLearnedPositionalEmbedding,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -27,15 +31,16 @@ logger = logging.getLogger(__name__)
 
 @contextmanager
 def apply_forward_hook(model, hook_dict):
-    """hook dict should be names of modules keyed by functions all hooks must
+    """
+    Hook dict should be names of modules keyed by functions all hooks must
     have the actual signature as the register forward hook in pytorch
     """
-
     all_hooks = []
 
     for n, m in model.named_modules():
         if n in hook_dict:
             all_hooks.append(m.register_forward_hook(hook_dict[n]))
+
     try:
         yield
 
@@ -46,24 +51,29 @@ def apply_forward_hook(model, hook_dict):
         all_hooks.clear()
 
 
-def get_activation_capture_hook_dict(model, desired_module_activations, aux=None):
+def get_activation_capture_hook_dict(model, desired_module_activations, aux=None, model_type="opt"):
+    """
+    Attach the specified hook forward-pass hook functions onto the given
+    model. The model types are one of [opt, hf]
+    """
     activation_dict, hook_dict = {}, {}
 
     desired_module_activations = set(desired_module_activations)
 
-    #logger.info("Rank {} with aux: {}".format(torch.distributed.get_rank(), aux))
-
     for n, m in model.named_modules():
         if n in desired_module_activations:
-            hook_dict[n] = partial(forward_hook_fn, n, activation_dict, aux)
+            if model_type == "opt":
+                hook_dict[n] = partial(opt_forward_hook_fn, n, activation_dict, aux)
+
+            elif model_type == "hf":
+                hook_dict[n] = partial(hf_forward_hook_fn, n, activation_dict, aux)
 
     return hook_dict, activation_dict
 
 
-def forward_hook_fn(registered_name, save_dict, aux, m, _, outputs):
-    # NOTE: don't touch the inputs! THEY MIGHT BE WRONG
-    # the inputs to the row parallel layers
-    # are sharded, so we need to unshard them
+def opt_forward_hook_fn(registered_name, save_dict, aux, m, _, outputs):
+    # NOTE: Don't consider inputs, since there can be arbitrary code between
+    #       module calls
     type_m = type(m)
 
     # every rank needs to do this
@@ -75,14 +85,10 @@ def forward_hook_fn(registered_name, save_dict, aux, m, _, outputs):
             )
     elif type_m == Dropout:
         if "self_attn" in registered_name:
-            # TODO: Newest megatron supports both first and last dim
+            # NOTE: Newest megatron supports both first and last dim
             # megatron only gathers the last dim, but we want to
             # gather on the first dim so we permute it to the end
             # and then permute it back
-
-            # TODO: we need to clean this up, it depends on the fact
-            # that the previous layer here is sharded
-            #outputs = rearrange(outputs, "bk s1 s2 -> s1 s2 bk")
             if not aux:
                 logger.info(
                     ("Rank {}: Required auxillary data for self-attention maps"
@@ -92,7 +98,6 @@ def forward_hook_fn(registered_name, save_dict, aux, m, _, outputs):
                 rearrange(outputs, "(b k) s1 s2 -> s1 s2 b k", b=aux[0]))
 
     elif type_m == torch.nn.Linear:
-        # TODO: This works, need to test against HF
         outputs = gather_from_tensor_model_parallel_region(outputs)
 
     # only rank 0 needs to do the rest
@@ -160,14 +165,11 @@ def forward_hook_fn(registered_name, save_dict, aux, m, _, outputs):
             output = rearrange(output, "s1 s2 b k -> b k s1 s2")
 
     elif type_m == torch.nn.Linear:
-        # Case for decoder.output_projection
-        # TODO: Unhandled, gather_from_tensor_model_parallel_region(outputs) hangs
-        #       Request decoder.output_projection to test
+        # Decoder output projection case
         output = outputs
 
-    # best effort kind of thing
     else:
-        # works on VocabParallelEmbedding
+        # VocabParallelEmbedding case
         output = outputs
 
     # some layers are always in S x B x D, permute them back
@@ -178,5 +180,36 @@ def forward_hook_fn(registered_name, save_dict, aux, m, _, outputs):
     ):
         output = rearrange(output, "s b d -> b s d")
 
-    # only pytorch tensors allowed for now
+    save_dict[registered_name] = output.detach().cpu()
+
+
+def hf_forward_hook_fn(registered_name, save_dict, aux, m, _, outputs):
+    """
+    Forward hook function for HuggingFace OPT model, conditioning on
+    (sub)module types. This function should not be used outside of testing.
+    """
+    type_m = type(m)
+    layer_type = registered_name.split(".")[-1] # In the case of duplicate types
+
+    if type_m == torch.nn.Embedding or type_m == OPTLearnedPositionalEmbedding:
+        output = outputs
+
+    elif type_m == OPTAttention:
+        output = outputs[0] # (attn_out, attn_weights_reshaped, past_key_values)
+
+    elif type_m == torch.nn.LayerNorm:
+        # Having "layers" in the name means m is a per-module layer norm
+        if layer_type == "final_layer_norm" and "layers" in registered_name:
+            output = rearrange(outputs, "(b s) h -> b s h", b=aux[0])
+
+        else:
+            output = outputs
+
+    elif type_m == torch.nn.Linear:
+        if layer_type in ["q_proj", "k_proj", "v_proj"]:
+            output = outputs
+
+        else:
+            output = rearrange(outputs, "(b s) h -> b s h", b=aux[0])
+
     save_dict[registered_name] = output.detach().cpu()

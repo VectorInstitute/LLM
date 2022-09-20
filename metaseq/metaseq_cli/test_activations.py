@@ -14,9 +14,9 @@ from transformers.models.opt.modeling_opt import (
 import torch
 
 from opt_client import Client
+from hook_utils import get_activation_capture_hook_dict, apply_forward_hook
 
 logger = logging.getLogger(__name__)
-
 
 BATCH_SIZE = 4  # So we don't need to use aux in HF forward hooks
 
@@ -61,62 +61,6 @@ def get_hf_activations(client, hf_model, prompts):
     )
 
     return act
-
-
-@contextmanager
-def apply_forward_hook_hf(model, hook_dict):
-    all_hooks = []
-    for n, m in model.named_modules():
-        if n in hook_dict:
-            all_hooks.append(m.register_forward_hook(hook_dict[n]))
-    try:
-        yield
-
-    finally:
-        for h in all_hooks:
-            h.remove()
-
-        all_hooks.clear()
-
-
-def get_activation_capture_hook_dict_hf(model, desired_module_activations, aux=None):
-    activation_dict, hook_dict = {}, {}
-
-    desired_module_activations = set(desired_module_activations)
-
-    for n, m in model.named_modules():
-        if n in desired_module_activations:
-            hook_dict[n] = partial(forward_hook_fn, n, activation_dict, aux)
-
-    return hook_dict, activation_dict
-
-
-def forward_hook_fn(registered_name, save_dict, aux, m, _, outputs):
-    type_m = type(m)
-    layer_type = registered_name.split(".")[-1] # In the case of duplicate types
-
-    if type_m == torch.nn.Embedding or type_m == OPTLearnedPositionalEmbedding:
-        output = outputs
-
-    elif type_m == OPTAttention:
-        output = outputs[0] # (attn_out, attn_weights_reshaped, past_key_values)
-
-    elif type_m == torch.nn.LayerNorm:
-        # Having "layers" in the name means m is a per-module layer norm
-        if layer_type == "final_layer_norm" and "layers" in registered_name:
-            output = rearrange(outputs, "(b s) h -> b s h", b=BATCH_SIZE)
-
-        else:
-            output = outputs
-
-    elif type_m == torch.nn.Linear:
-        if layer_type in ["q_proj", "k_proj", "v_proj"]:
-            output = outputs
-
-        else:
-            output = rearrange(outputs, "(b s) h -> b s h", b=BATCH_SIZE)
-
-    save_dict[registered_name] = output.detach().cpu()
 
 
 def init_opt_hf_mappings(num_layers):
@@ -196,7 +140,7 @@ def retrieve_opt_activations(mapping, client, prompts):
     return acts
 
 
-def retrieve_hf_activations(mapping, client, model, prompts):
+def retrieve_hf_activations(mapping, client, model, prompts, aux):
     """
     Get the activations from a HF model. HF models can output logits, 
     attention maps, and the outputs of decoder transformer layers without
@@ -206,13 +150,14 @@ def retrieve_hf_activations(mapping, client, model, prompts):
     """
     # Helper functions for hooked activations
     def _retrieve_hooked_acts(client, model, prompts, module_names):
-        hook_dict, acts = get_activation_capture_hook_dict_hf(
+        hook_dict, acts = get_activation_capture_hook_dict(
             model,
             module_names,
-            aux=None,
+            aux=aux,
+            model_type="hf",
         )
 
-        with apply_forward_hook_hf(model, hook_dict):
+        with apply_forward_hook(model, hook_dict):
             results = get_hf_logits(client, model, prompts)
 
         return acts
@@ -333,6 +278,7 @@ def main(args):
         "Today is a beautiful day and I want to",
         "what is the meaning of life?",
     ]
+    batch_size = len(prompts)
 
     opt_mappings, hf_mappings = init_opt_hf_mappings(len(hf_model.model.decoder.layers))
 
@@ -340,7 +286,7 @@ def main(args):
         assert opt_type == hf_type
 
         opt_acts = retrieve_opt_activations(opt_map, client, prompts)
-        hf_acts = retrieve_hf_activations(hf_map, client, hf_model, prompts)
+        hf_acts = retrieve_hf_activations(hf_map, client, hf_model, prompts, aux=(batch_size,))
 
         assert_activations_correctness(hf_acts, opt_acts, act_type=opt_type)
 
