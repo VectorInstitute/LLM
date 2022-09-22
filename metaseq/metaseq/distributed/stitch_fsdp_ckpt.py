@@ -588,7 +588,6 @@ def reshard_megatron_parts(model_parts, new_model_part_count=1):
                 assert_all_close(key)
                 _copy_key_to_all_parts(key)
 
-
         elif "version" in key:
             _copy_key_to_all_parts(key)
 

@@ -539,9 +539,6 @@ def cli_main():
     cfg = convert_namespace_to_omegaconf(args)
     cfg.distributed_training.distributed_world_size = TOTAL_WORLD_SIZE
 
-    # TODO: remove when using slurm
-    cfg.distributed_training.distributed_port = 0
-
     distributed_utils.call_main(cfg, worker_main, namespace_args=args)
 
 
