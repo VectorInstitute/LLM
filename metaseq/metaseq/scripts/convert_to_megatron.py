@@ -1,9 +1,9 @@
 #!/usr/bin/env python
 
 """
-script for converting the same sharding into megatron
+Script for converting the same sharding into megatron
 
-Particularly useful for converting our models to other repositories.
+Note: This may take a while for larger models!
 
 Usage:
     $ ls 125m
@@ -124,6 +124,7 @@ def worker_main(cfg: MetaseqConfig):
     mp_size = distributed_utils.get_model_parallel_world_size()
     model_parts = [{} for _ in range(mp_size)]
 
+    # Summon all params using fsdp
     with model.summon_full_params():
         for name, p in model.named_parameters():
             gathered = [torch.zeros_like(p) for _ in range(mp_size)]
@@ -137,6 +138,9 @@ def worker_main(cfg: MetaseqConfig):
     megatron_glued_parts = reshard_megatron_parts(
         model_parts, new_model_part_count=len(model_parts)
     )
+    if torch.distributed.get_rank() == 0:
+        logger.info(f"Model has been glued Megatron-style")
+
 
     for i, glued in enumerate(megatron_glued_parts):
         # glued['decoder.output_projection.weight'] = glued['decoder.embed_tokens.weight']
@@ -155,10 +159,14 @@ def worker_main(cfg: MetaseqConfig):
         output_sd["cfg"]["model"]._name = "transformer_lm_megatron"
 
         if distributed_utils.get_global_rank() == 0:
+            logger.info("Saving model parts on CPU to disk")
             with open(
                 os.path.join(cfg.task.data, f"megatronreshard-model_part-{i}.pt"), "wb"
             ) as f:
                 torch.save(output_sd, f)
+
+    if torch.distributed.get_rank() == 0:
+        logger.info("Completed conversion to megatron")
 
 
 def main():

@@ -48,8 +48,8 @@ DEFAULT_PORT = 6969
 MODEL_PARALLEL = 2
 TOTAL_WORLD_SIZE = 2
 
-# CHECKPOINT_FOLDER = "/checkpoint/opt_test/original/OPT-6.7B"
-CHECKPOINT_FOLDER = "/checkpoint/opt_test/original/OPT-125M"
+CHECKPOINT_FOLDER = "/checkpoint/opt_test/original/OPT-6.7B"
+#CHECKPOINT_FOLDER = "/checkpoint/opt_test/original/OPT-125M"
 
 ###
 

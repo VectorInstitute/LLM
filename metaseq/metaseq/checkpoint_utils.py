@@ -578,9 +578,11 @@ def load_model_ensemble_and_task(
             if emb_key in state["model"] and oproj_key not in state["model"]:
                 state["model"][oproj_key] = state["model"][emb_key]
 
-            # TODO: Need to add this as a config down the line
+            # TODO (mchoi): Make this a config
+            # NOTE: Don't turn this on by default unless testing using
+            #       test_activations.py. Else, the difference in keys may break things
             combine_qkv = True
-            if combine_qkv:
+            if not combine_qkv:
                 self_attn_proj_keys = [key for key in state["model"] if "self_attn.qkv_proj" in key]
                 for key in self_attn_proj_keys:
                     key_prefix = ".".join(key.split(".")[:-2])

@@ -14,6 +14,10 @@ def check_response(resp):
     ), f"error in request with code {resp.status_code} resp {resp.json()}"
 
 
+def decode_str(obj_in_str):
+    return pickle.loads(codecs.decode(obj_in_str.encode("utf-8"), "base64"))
+
+
 @dataclass
 class Client:
     host: str
@@ -23,6 +27,7 @@ class Client:
         self.addr = f"http://{self.host}:{self.port}/completions"
         self.encode_addr = f"http://{self.host}:{self.port}/encode"
         self.module_name_addr = f"http://{self.host}:{self.port}/module_names"
+        self.weight_addr = f"http://{self.host}:{self.port}/weight"
 
     def _generate(
         self,
@@ -71,6 +76,21 @@ class Client:
         check_response(resp)
 
         return resp.json()["module_names"]
+
+
+    def weight(self, module_name):
+        """
+        Helper function that gives some flexibility to pinging various model
+        states. This only retrieves a single rank's weights however, so do not
+        use outside of debugging.
+        """
+        resp = requests.get(self.weight_addr, json={"module_name": module_name})
+
+        check_response(resp)
+
+        ret_string = resp.json()["weight"]
+
+        return decode_str(ret_string).cpu()
 
     def tokenize(
         self,
@@ -125,9 +145,6 @@ class Client:
             echo=False,
             desired_module_activations=desired_module_activations,
         )
-
-        def decode_str(obj_in_str):
-            return pickle.loads(codecs.decode(obj_in_str.encode("utf-8"), "base64"))
 
         activations = [
             {k: decode_str(v) for k, v in c["activations"].items()}

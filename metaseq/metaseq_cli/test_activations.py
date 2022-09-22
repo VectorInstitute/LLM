@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 import argparse
-import logging
 from contextlib import contextmanager
 from functools import partial
+import logging
 
+from accelerate import Accelerator
 from einops import rearrange
 from transformers import OPTForCausalLM
 from transformers.models.opt.modeling_opt import (
@@ -17,8 +18,6 @@ from opt_client import Client
 from hook_utils import get_activation_capture_hook_dict, apply_forward_hook
 
 logger = logging.getLogger(__name__)
-
-BATCH_SIZE = 4  # So we don't need to use aux in HF forward hooks
 
 
 def prepare_args():
@@ -34,7 +33,7 @@ def get_hf_logits(client, hf_model, prompts):
     max_len = max(map(len, input_ids_list))
 
     # pad right
-    input_ids = torch.as_tensor([i + [1] * (max_len - len(i)) for i in input_ids_list])
+    input_ids = torch.as_tensor([i + [1] * (max_len - len(i)) for i in input_ids_list]).cuda()
     with torch.no_grad():
         # slice out the start of seq
         logits_hf = hf_model(input_ids)[0]
@@ -51,7 +50,7 @@ def get_hf_activations(client, hf_model, prompts):
     max_len = max(map(len, input_ids_list))
 
     # pad right
-    input_ids = torch.as_tensor([i + [1] * (max_len - len(i)) for i in input_ids_list])
+    input_ids = torch.as_tensor([i + [1] * (max_len - len(i)) for i in input_ids_list]).cuda()
 
     act = hf_model(
         input_ids,
@@ -71,6 +70,7 @@ def init_opt_hf_mappings(num_layers):
     # NOTE: Activation function outputs cannot be compared, since OPT uses
     #       FusedLayerNorm layers
     opt_mappings = {
+        "logits": ["decoder"],
         "embed_tokens": ["decoder.embed_tokens"],
         "embed_positions": ["decoder.embed_positions"],
         "transformer_layers": [f"decoder.layers.{i}" for i in range(num_layers - 1)] + ["decoder.layer_norm"],
@@ -84,9 +84,12 @@ def init_opt_hf_mappings(num_layers):
         "fc2": [f"decoder.layers.{i}.fc2" for i in range(num_layers)],
         "decoder_layer_norm": [f"decoder.layers.{i}.final_layer_norm" for i in range(num_layers)],
         "output_layer_norm": ["decoder.layer_norm"],
-        "logits": ["decoder"],
     }
     hf_mappings = {
+        "logits": [
+            "custom",
+            get_hf_logits,
+            lambda output: [output]],
         "embed_tokens": ["model.decoder.embed_tokens"],
         "embed_positions": ["model.decoder.embed_positions"],
         "transformer_layers": [
@@ -106,10 +109,6 @@ def init_opt_hf_mappings(num_layers):
         "fc2": [f"model.decoder.layers.{i}.fc2" for i in range(num_layers)],
         "decoder_layer_norm": [f"model.decoder.layers.{i}.final_layer_norm" for i in range(num_layers)],
         "output_layer_norm": [f"model.decoder.final_layer_norm"],
-        "logits": [
-            "custom",
-            get_hf_logits,
-            lambda output: [output]],
     }
     return opt_mappings, hf_mappings
 
@@ -198,10 +197,10 @@ def retrieve_hf_activations(mapping, client, model, prompts, aux):
     return acts
 
 
-def assert_activations_correctness(hf_results, opt_results, act_type="transformer_layer"):
+def assert_activations_correctness(hf_results, opt_results, act_type="transformer_layer", crash_on_false=True):
     """
     Helper function taking HF and OPT activation collections, and
-    makes sure they're allclose
+    makes sure they're allclose within some range
     """
     def _assert_allclose_and_get_summed_diff(hf_acts, opt_acts):
         def _get_diff(x, y):
@@ -212,16 +211,25 @@ def assert_activations_correctness(hf_results, opt_results, act_type="transforme
 
         diff = _get_diff(hf_acts, opt_acts)
 
-        if torch.allclose(hf_acts, opt_acts, atol=1e-1):
-            return diff
+        allclose = torch.allclose(hf_acts, opt_acts, atol=1e-1, rtol=1e-2)
+
+        if allclose:
+            return diff, allclose
+
+        elif not allclose and crash_on_false:
+            raise Exception("Large diff in {}: {}".format(act_type, diff))
+
+        elif not allclose and not crash_on_false:
+            return diff, allclose
 
         else:
-            raise Exception("Large diff in {}: {}".format(act_type, diff))
-    
+            raise Exception("Assertion resulted in invalid args")
 
     total_diff = 0.0
-    for (module_name, opt_acts), hf_acts in zip(opt_results.items(), hf_results):
-        for opt_act, hf_act in zip(opt_acts, hf_acts):
+    allclose_fails = []
+    # Of shape (layer_idx, batch_idx)
+    for layer_idx, ((module_name, opt_acts), hf_acts) in enumerate(zip(opt_results.items(), hf_results)):
+        for batch_idx, (opt_act, hf_act) in enumerate(zip(opt_acts, hf_acts)):
 
             opt_act = opt_act.detach().cpu().float()
             hf_act = hf_act.detach().cpu().float()
@@ -254,23 +262,40 @@ def assert_activations_correctness(hf_results, opt_results, act_type="transforme
             elif act_type == "qkv_proj":
                 raise NotImplementedError
 
-            elif act_type == "logits":  # TODO: Logits has a custom retrieval
+            elif act_type == "logits":  # Logits has a custom retrieval
                 pass
 
             else:
                 raise NotImplementedError
 
-            total_diff += _assert_allclose_and_get_summed_diff(hf_act, opt_act) 
+            diff, allclose = _assert_allclose_and_get_summed_diff(hf_act, opt_act)
+
+            if not allclose:
+                allclose_fails.append(f"{act_type} | layer {layer_idx} | batch {batch_idx}")
+
+            total_diff += diff
 
     print("{} has average diff: {}".format(act_type, total_diff))
-                
+
+    return total_diff, allclose_fails
+
 
 def main(args):
     # Make client connection
     client = Client(args.host, args.port)
 
-    # Create HF model
-    hf_model = OPTForCausalLM.from_pretrained("/checkpoint/opt_test/original/OPT-125M")
+    # Create huggingface model
+    accelerator = Accelerator()
+    hf_model, output_loading_info = OPTForCausalLM.from_pretrained(
+        "facebook/opt-6.7b",
+        cache_dir="/checkpoint/opt_test/original/OPT-6.7B",
+        output_loading_info=True,
+        low_cpu_mem_usage=True, # Prevents random init of params before load
+        #torch_dtype=torch.float32, # float32 gives better acc, but T4 can't load
+    )
+    hf_model.eval()
+    assert not sum(list(output_loading_info.values()), []) # No keys randomly init
+    hf_model = accelerator.prepare(hf_model)
 
     prompts = [
         "vector matrix",
@@ -280,15 +305,24 @@ def main(args):
     ]
     batch_size = len(prompts)
 
+    # Initialize OPT-HF layer mappings
     opt_mappings, hf_mappings = init_opt_hf_mappings(len(hf_model.model.decoder.layers))
 
+    # For each mapping, retrieve + format activations and compare using allclose
+    diff = {}
+    fails = []
     for (opt_type, opt_map), (hf_type, hf_map) in zip(opt_mappings.items(), hf_mappings.items()):
         assert opt_type == hf_type
 
         opt_acts = retrieve_opt_activations(opt_map, client, prompts)
         hf_acts = retrieve_hf_activations(hf_map, client, hf_model, prompts, aux=(batch_size,))
 
-        assert_activations_correctness(hf_acts, opt_acts, act_type=opt_type)
+        diff[opt_type], allclose_fails = assert_activations_correctness(hf_acts, opt_acts, act_type=opt_type, crash_on_false=False)
+        fails.append(allclose_fails)
+
+    for mapping_allclose_fails in fails:
+        if mapping_allclose_fails:
+            print(mapping_allclose_fails)
 
 
 if __name__ == "__main__":

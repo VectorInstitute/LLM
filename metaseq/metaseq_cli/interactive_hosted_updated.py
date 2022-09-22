@@ -20,6 +20,7 @@ import threading
 import traceback
 import pickle
 import codecs
+import functools
 
 import torch
 from flask import Flask, request, jsonify
@@ -387,6 +388,27 @@ def module_names():
         "module_names": tuple(
             n for n, _ in generator.models[0].named_modules() if n != ""
         )
+    }
+
+
+@app.route("/weight", methods=["GET"])
+def weight():
+    module_name = request.json["module_name"]
+
+    def _rgetattr(obj, attr, *args):
+        def _getattr(obj, attr):
+            return getattr(obj, attr, *args)
+        return functools.reduce(_getattr, [obj] + attr.split("."))
+
+    module_weight = _rgetattr(generator.models[0], module_name)
+
+    ret = codecs.encode(
+        pickle.dumps(module_weight),
+        "base64",
+    ).decode("utf-8")
+
+    return {
+        "weight": ret
     }
 
 
