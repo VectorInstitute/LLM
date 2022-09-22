@@ -575,7 +575,6 @@ def reshard_megatron_parts(model_parts, new_model_part_count=1):
                 assert key.endswith("weight")
                 _consolidate_and_reshard(key, dim=1)
 
-
         elif "embed_tokens.weight" in key:
             _consolidate_and_reshard(key, dim=0)
 
