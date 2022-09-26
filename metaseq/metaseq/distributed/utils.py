@@ -155,6 +155,7 @@ def distributed_init(cfg: MetaseqConfig):
     if is_master(cfg.distributed_training):
         logging.getLogger().setLevel(logging.INFO)
     else:
+        # TODO: Let other ranks log for debug
         logging.getLogger().setLevel(logging.INFO)
 
     if cfg.common.model_parallel_size > 1:
