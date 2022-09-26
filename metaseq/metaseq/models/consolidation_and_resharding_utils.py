@@ -1,30 +1,3 @@
-#!/usr/bin/env python
-
-"""
-Script for backing out of the MP-resharded (reshard.pt) files and getting back
-a non-flattened state dict.
-
-Particularly useful for converting our models to other repositories.
-
-Usage:
-    $ ls 125m
-    dict.txt
-    gpt2-merges.txt
-    gpt2-vocab.json
-    reshard-model_part-0.pt
-    reshard-model_part-1.pt
-
-    $ python -m metaseq.scripts.convert_to_singleton 125m
-
-    $ ls 125m
-    dict.txt
-    gpt2-merges.txt
-    gpt2-vocab.json
-    reshard-model_part-0.pt
-    reshard-model_part-1.pt
-    restored.pt
-"""
-
 import argparse
 import glob
 import logging
@@ -39,18 +12,19 @@ from metaseq.dataclass.utils import convert_namespace_to_omegaconf
 from metaseq.distributed import utils as distributed_utils
 from metaseq.distributed import fsdp_enable_wrap, fsdp_wrap
 from metaseq.distributed.stitch_fsdp_ckpt import reshard_megatron_parts
-
-logging.basicConfig(
-    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-    level=os.environ.get("LOGLEVEL", "INFO").upper(),
-    stream=sys.stdout,
-)
-logger = logging.getLogger("convert_to_singleton")
+#from metaseq.models.glm import GLMModel
 
 
-def create_generation_config_with_defaults(model_path):
-    files = glob.glob(f"{model_path}/reshard*.pt")
+logger = logging.getLogger(__name__)
+
+
+def create_config_with_defaults(
+    model_path,
+    arch,
+    prefix="reshard",
+):
+    """Given the path to a model and its tokenizer files, create a config."""
+    files = glob.glob(f"{model_path}/{prefix}*.pt")
 
     MP = len(files)
     BPE_MERGES = model_path + "/gpt2-merges.txt"
@@ -58,6 +32,8 @@ def create_generation_config_with_defaults(model_path):
 
     # Skeleton out all the annoying command line args we can infer
     ARGS = [
+        "--arch",
+        arch,
         "--model-parallel-size",
         str(MP),
         "--distributed-world-size",
@@ -93,12 +69,15 @@ def create_generation_config_with_defaults(model_path):
     return cfg
 
 
-def worker_main(cfg: MetaseqConfig):
+def convert_shards_to_singleton_worker_main(cfg: MetaseqConfig):
     """
     Load up the model on all workers for Model Parallelism, then
     unflatten, move to cpu, and save to "restored.pt".
     """
     task = tasks.setup_task(cfg.task)
+
+    if torch.distributed.is_initialized():
+        logger.info(f"Rank {torch.distributed.get_rank()}")
 
     def _build_model(cfg, task):
         # Fix so we don't have to manually comment out dtype arg in megatron-lm
@@ -107,10 +86,15 @@ def worker_main(cfg: MetaseqConfig):
         model = task.build_model(cfg.model).cuda()
         return fsdp_wrap(model)
 
-    with fsdp_enable_wrap(
-        cfg.distributed_training,
-        use_sharded_state=cfg.distributed_training.use_sharded_state,
-    ):
+    if cfg.model._name == "glm_large":
+        # TODO (mchoi): Test this loading on MP=2 GLM model
+        model, cfg = GLMModel.from_pretrained(cfg, 'glm-large-en-blank')
+        breakpoint()
+
+    # TODO (mchoi): Nothing past this is tested for GLM
+        
+    else:
+        # TODO (mchoi): Add GLM under this checkpoint loading util
         models, _model_args, _task = checkpoint_utils.load_model_ensemble_and_task(
             utils.split_paths(cfg.common_eval.path),
             arg_overrides=None,
@@ -121,7 +105,6 @@ def worker_main(cfg: MetaseqConfig):
             build_model_hook=_build_model,
         )
         model = models[0]
-
     # consolidate everything on rank0
     mp_size = distributed_utils.get_model_parallel_world_size()
     model_parts = [{} for _ in range(mp_size)]
@@ -165,15 +148,40 @@ def worker_main(cfg: MetaseqConfig):
             torch.save(output_sd, f)
 
 
-def main():
-    # parser to be used like docstring shows
-    real_parser = argparse.ArgumentParser()
-    real_parser.add_argument("location")
-    args = real_parser.parse_args()
+def convert_shards_to_singleton(model_path, arch):
+    cfg = create_config_with_defaults(
+        model_path=model_path,
+        arch=arch,
+        prefix="mp_rank_"   # Case with default GLM checkpoints
+    )
+    distributed_utils.call_main(cfg, convert_shards_to_singleton_worker_main)
 
-    cfg = create_generation_config_with_defaults(args.location)
-    distributed_utils.call_main(cfg, worker_main)
+
+def upgrade_glm_sd(sd, prefix):
+    new_sd = {'model':{}}   # Replace module with model for consistency with OPT
+    for k in sd:
+        if k != 'module':
+            new_sd[k] = sd[k]
+
+    for k in sd['module']:
+        if k.startswith(prefix):
+            new_sd['model'][k[len(prefix):]] = sd['module'][k]
+
+    return new_sd
 
 
-if __name__ == "__main__":
-    main()
+def reshard_model_parallel(
+    model_singleton_path,
+    part=0,
+    target_mp_size=512,
+    no_pad=False,
+    drop_optimizer_state=False,
+):
+    try:
+        state = torch.load(model_singleton_path)
+    except FileNotFoundError:
+        logger.info(f"Model checkpoint {model_singleton_path} does not exist")
+
+    state = upgrade_glm_sd(state, prefix="")
+
+    breakpoint()

@@ -161,6 +161,7 @@ def parse_args_and_arch(
 
     # Add model-specific args to parser.
     if hasattr(args, "arch"):
+        #print(f"Arch arg: {args.arch}")
         model_specific_group = parser.add_argument_group(
             "Model-specific configuration",
             # Only include attributes which are explicitly given as command-line

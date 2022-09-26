@@ -44,8 +44,7 @@ from metaseq.service.constants import (
 from metaseq.service.utils import get_my_ip, encode_fn, build_logger
 from metaseq.service.responses import OAIResponse
 
-#TODO: Testing swissarmytransformer mega-module
-from metaseq.models.glm import GLMModel
+from metaseq.models.glm import GLMModel, CachedAutoregressiveMixin
 
 
 app = Flask(__name__)
@@ -182,7 +181,6 @@ def swiss_worker_main(cfg: MetaseqConfig, namespace_args=None):
     model, cfg = GLMModel.from_pretrained(cfg, 'glm-large-en-blank')
     breakpoint()
     model.add_mixin('auto-regressive', CachedAutoregressiveMixin())
-
 
     with torch.no_grad():
         main(model, args)
