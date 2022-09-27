@@ -59,8 +59,11 @@ def auto_create(name, *, path=None, url=None):
     """
     Fetches the pre-trained model given by name, and downloads it to path.
     """
+    # TODO (mchoi): Separate download vs. model_path grepping utilities.
+    #               Metaseq should grep model paths, while this fn should only
+    #               provide download utility
     if path is None:
-        path = os.getenv("SAT_HOME", "~/.sat_models")  # TODO (mchoi): Rename
+        path = os.getenv("SAT_HOME", "~/.sat_models")
     path = os.path.expanduser(path)
     file_path = os.path.join(path, name + ".zip")
     model_path = os.path.join(path, name)

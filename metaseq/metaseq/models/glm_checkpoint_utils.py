@@ -5,8 +5,8 @@ import os
 from omegaconf import OmegaConf
 import torch
 
-from metaseq.models.consolidation_and_resharding_utils import upgrade_glm_sd
-from megatron.mpu.initialize import get_tensor_model_parallel_rank, get_data_parallel_rank
+from megatron.mpu.initialize import (
+    get_tensor_model_parallel_rank, get_data_parallel_rank)
 
 
 logger = logging.getLogger(__name__)
@@ -23,8 +23,8 @@ def get_checkpoint_name(checkpoints_path, iteration, release=False, zero=False):
     return os.path.join(
         checkpoints_path,
         d,
-        "mp_rank_{:02d}_model_states.pt".format(get_tensor_model_parallel_rank()),
-    )
+        "glmreshard-model_part-{}.pt".format(get_tensor_model_parallel_rank()),
+    )   # NOTE: All GLM ckpts should be renamed similar to OPT ckpts
 
 
 def get_checkpoint_tracker_filename(checkpoints_path, old_checkpoint=False):
@@ -102,20 +102,12 @@ def load_checkpoint(model, cfg, load_path=None, prefix=""):
     except FileNotFoundError:
         print(f"Model checkpoint under {checkpoint_name} does not exist")
 
-    sd = upgrade_glm_sd(sd, prefix)
-
     if hasattr(model, "module"):
         module = model.module
     else:  # inference without deepspeed
         module = model
 
-    # TODO: Checkpoint loads, but since GLM-large is a singleton checkpoint and
-    #       there are no native resharding utilities, there are size mismatches
-    #       during the module.load_state_dict() call goes through. We should
-    #       facilitate resharding across ranks if needed.
-    # only load module, other hyperparameters are just for recording.
-    breakpoint()
-    missing_keys, unexpected_keys = module.load_state_dict(sd["module"], strict=False)
+    missing_keys, unexpected_keys = module.load_state_dict(sd["model"], strict=False)
 
     if len(unexpected_keys) > 0:
         raise Exception(f"Found unexpected keys: {unexpected_keys}")

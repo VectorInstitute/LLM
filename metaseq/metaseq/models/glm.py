@@ -133,7 +133,6 @@ class BaseTransformer(torch.nn.Module):
         # self.word_embeddings = VocabParallelEmbedding(
         #    num_embeddings=vocab_size, embedding_dim=hidden_size,
         #    params_dtype=params_dtype, skip_init=skip_init, device=device)
-        # TODO: skip_init and device shouldn't be needed
         self.word_embeddings = VocabParallelEmbedding(
             num_embeddings=vocab_size,
             embedding_dim=hidden_size,
@@ -333,7 +332,7 @@ class BaseTransformer(torch.nn.Module):
                     flat_inputs.append(v)
                     cross_layer_index[k] = len(flat_inputs) - 1
                 # --------------------
-                # TODO: Get rid of all deepspeed calls
+                # TODO (mchoi): Get rid of all deepspeed calls
                 # hidden_states, output_per_layers_part, output_cross_layer, *flat_outputs = \
                 #    checkpoint(custom(l, l + chunk_length, kw_args_index, cross_layer_index), *args, *flat_inputs)
                 (
@@ -431,9 +430,9 @@ class BaseModel(torch.nn.Module):
                 output_dropout_prob=cfg.model.hidden_dropout,
                 inner_hidden_size=cfg.model.inner_hidden_size,
                 hidden_size_per_attention_head=cfg.model.hidden_size_per_attention_head,
-                # checkpoint_activations=cfg.model.checkpoint_activations, # TODO: Deepspeed turned off
+                # checkpoint_activations=cfg.model.checkpoint_activations, # TODO (mchoi): Deepspeed turned off
                 checkpoint_activations=False,
-                # checkpoint_num_layers=cfg.model.checkpoint_num_layers, #TODO: Deepspeed turned off
+                # checkpoint_num_layers=cfg.model.checkpoint_num_layers, #TODO (mchoi): Deepspeed turned off
                 checkpoint_num_layers=1,
                 layernorm_order=cfg.model.layernorm_order,
                 hooks=self.hooks,
@@ -519,6 +518,7 @@ class BaseModel(torch.nn.Module):
 
     @classmethod
     def from_pretrained(cls, cfg, name, *, home_path=None, url=None, prefix=""):
+        # TODO (mchoi): Find the model paths from constants.py, similar to opt
         model_path = auto_create(name, path=home_path, url=url)
         cfg = update_args_with_file(
             cfg, path=os.path.join(model_path, "model_config.json")

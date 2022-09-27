@@ -1,187 +1,295 @@
 import argparse
-import glob
+from collections import defaultdict, OrderedDict
+from functools import partial
+from glob import glob
 import logging
 import os
-import sys
+from pathlib import Path
+import time
+from tqdm import tqdm
 
 import torch
 
-from metaseq import options, tasks, checkpoint_utils, utils
-from metaseq.dataclass.configs import MetaseqConfig
-from metaseq.dataclass.utils import convert_namespace_to_omegaconf
-from metaseq.distributed import utils as distributed_utils
-from metaseq.distributed import fsdp_enable_wrap, fsdp_wrap
-from metaseq.distributed.stitch_fsdp_ckpt import reshard_megatron_parts
-#from metaseq.models.glm import GLMModel
+from metaseq.distributed.stitch_fsdp_ckpt import reshard_megatron_parts, find_num_parts
+from metaseq.file_io import load_and_pop_last_optimizer_state
 
 
 logger = logging.getLogger(__name__)
 
 
-def create_config_with_defaults(
-    model_path,
-    arch,
-    prefix="reshard",
-):
-    """Given the path to a model and its tokenizer files, create a config."""
-    files = glob.glob(f"{model_path}/{prefix}*.pt")
-
-    MP = len(files)
-    BPE_MERGES = model_path + "/gpt2-merges.txt"
-    BPE_VOCAB = model_path + "/gpt2-vocab.json"
-
-    # Skeleton out all the annoying command line args we can infer
-    ARGS = [
-        "--arch",
-        arch,
-        "--model-parallel-size",
-        str(MP),
-        "--distributed-world-size",
-        str(MP),
-        "--task",
-        "language_modeling",
-        "--bpe-merges",
-        BPE_MERGES,
-        "--merges-filename",
-        BPE_MERGES,
-        "--bpe-vocab",
-        BPE_VOCAB,
-        "--vocab-filename",
-        BPE_VOCAB,
-        "--bpe",
-        "hf_byte_bpe",
-        "--path",
-        model_path + "/reshard.pt",
-        "--checkpoint-shard-count",
-        "1",
-        "--use-sharded-state",
-        model_path,
-    ]
-
-    # build up the config file
-    parser = options.get_generation_parser()
-    # dumb defaults overriding
-    parser.set_defaults(lr_scheduler=None, criterion=None)
-    args = options.parse_args_and_arch(parser, input_args=ARGS)
-    cfg = convert_namespace_to_omegaconf(args)
-    cfg.distributed_training.distributed_world_size = MP
-
-    return cfg
-
-
-def convert_shards_to_singleton_worker_main(cfg: MetaseqConfig):
-    """
-    Load up the model on all workers for Model Parallelism, then
-    unflatten, move to cpu, and save to "restored.pt".
-    """
-    task = tasks.setup_task(cfg.task)
-
-    if torch.distributed.is_initialized():
-        logger.info(f"Rank {torch.distributed.get_rank()}")
-
-    def _build_model(cfg, task):
-        # Fix so we don't have to manually comment out dtype arg in megatron-lm
-        # source code
-        cfg.model.tensor_parallel_init_model_on_gpu = True
-        model = task.build_model(cfg.model).cuda()
-        return fsdp_wrap(model)
-
-    if cfg.model._name == "glm_large":
-        # TODO (mchoi): Test this loading on MP=2 GLM model
-        model, cfg = GLMModel.from_pretrained(cfg, 'glm-large-en-blank')
-        breakpoint()
-
-    # TODO (mchoi): Nothing past this is tested for GLM
-        
-    else:
-        # TODO (mchoi): Add GLM under this checkpoint loading util
-        models, _model_args, _task = checkpoint_utils.load_model_ensemble_and_task(
-            utils.split_paths(cfg.common_eval.path),
-            arg_overrides=None,
-            task=task,
-            suffix=cfg.checkpoint.checkpoint_suffix,
-            strict=True,
-            num_shards=cfg.checkpoint.checkpoint_shard_count,
-            build_model_hook=_build_model,
-        )
-        model = models[0]
-    # consolidate everything on rank0
-    mp_size = distributed_utils.get_model_parallel_world_size()
-    model_parts = [{} for _ in range(mp_size)]
-
-    with model.summon_full_params():
-        for name, p in model.named_parameters():
-            gathered = [torch.zeros_like(p) for _ in range(mp_size)]
-            torch.distributed.all_gather(
-                gathered, p, group=distributed_utils.get_global_group()
-            )
-            for r, t in enumerate(gathered):
-                model_parts[r][name] = t.cpu()
-
-    if distributed_utils.get_global_rank() == 0:
-        print("############ loaded up a model ###############")
-        shard_metadata = model.local_metadata_dict()
-        import pickle
-        # TODO: Make this non-fixed
-        with open('/checkpoint/opt_test/original/OPT-125M/test_shard_metadata.pkl', 'wb') as f:
-              pickle.dump(shard_metadata, f)
-        print("#################################")
-        #exit(1)
-
-    glued = reshard_megatron_parts(model_parts, new_model_part_count=1)[0]
-    # glued['decoder.output_projection.weight'] = glued['decoder.embed_tokens.weight']
-
-    glued["decoder.version"] = model.state_dict()["decoder.version"].cpu()
-
-    if "decoder.output_projection.weight" in glued:
-        del glued["decoder.output_projection.weight"]
-
-    output_sd = checkpoint_utils.load_checkpoint_to_cpu(
-        cfg.common_eval.path.replace("reshard.pt", "reshard-model_part-0.pt")
+def prepare_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--src_path_prefix",
+        type=str,
+        default="/checkpoint/opt_test/original/OPT-125M/megatronreshard",
     )
-    output_sd["model"] = utils.move_to_cpu(glued)
-    output_sd["cfg"]["model"].arch = "transformer_lm"
-    output_sd["cfg"]["model"]._name = "transformer_lm"
-
-    if distributed_utils.get_global_rank() == 0:
-        with open(cfg.task.data + "/restored.pt", "wb") as f:
-            torch.save(output_sd, f)
-
-
-def convert_shards_to_singleton(model_path, arch):
-    cfg = create_config_with_defaults(
-        model_path=model_path,
-        arch=arch,
-        prefix="mp_rank_"   # Case with default GLM checkpoints
+    parser.add_argument(
+        "--tgt_path_prefix",
+        type=str,
+        default="/checkpoint/opt_test/original/TEST_glm_merge/OPT-125M/megatronreshard",
     )
-    distributed_utils.call_main(cfg, convert_shards_to_singleton_worker_main)
+    parser.add_argument("--target_mp_size", type=int, default=4)
+    parser.add_argument("--model_type", type=str, default="opt")
+    return parser.parse_args()
 
 
 def upgrade_glm_sd(sd, prefix):
-    new_sd = {'model':{}}   # Replace module with model for consistency with OPT
+    """
+    Pre-processing function for GLM/SwissArmyTransformer checkpoints (decoder-
+    only currently). First changes top-level key to model, similar to metaseq.
+    """
+    new_sd = {"model": {}}  # Replace module with model for consistency with OPT
     for k in sd:
-        if k != 'module':
+        if k != "module":
             new_sd[k] = sd[k]
 
-    for k in sd['module']:
+    for k in sd["module"]:
         if k.startswith(prefix):
-            new_sd['model'][k[len(prefix):]] = sd['module'][k]
+            new_sd["model"][k[len(prefix) :]] = sd["module"][k]
 
     return new_sd
 
 
+def _get_model_part_num(filename):
+    return int(os.path.basename(filename).replace(".pt", "").split("-")[-1])
+
+
+def reshard_glm_parts(model_parts, new_model_part_count=1):
+    """
+    Reshard to a different number of model parts for GLM SwissArmyTransformer-
+    based model.
+    """
+    new_model_parts = [OrderedDict() for _ in range(new_model_part_count)]
+
+    # TODO (mchoi): Add this aliasing to convert from glm to metaseq-like
+    #               submodule/layer names. This should be done after the
+    #               glm model merge has completed, else we can't load up the
+    #               re-aliased resharded glm checkpoints.
+    """
+    glm_metaseq_submodule_aliases = {
+        "transformer": "decoder",
+    }
+    """
+
+    def assert_all_close(key):
+        for part_id in range(len(model_parts)):
+            if not torch.allclose(model_parts[part_id][key], model_parts[0][key]):
+                err = (
+                    (model_parts[part_id][key] - model_parts[0][key])
+                    .float()
+                    .abs()
+                    .max()
+                    .item()
+                )
+                print(f"max discrepancy {key}: {err}")
+
+    def consolidate_and_reshard(key, dim):
+        consolidated_tensor = torch.cat(
+            [model_parts[part_id][key] for part_id in range(len(model_parts))],
+            dim=dim,
+        )
+        assert consolidated_tensor.size(dim) % new_model_part_count == 0
+
+        newly_resharded_tensors = torch.chunk(
+            consolidated_tensor,
+            new_model_part_count,
+            dim=dim,
+        )
+        for i in range(new_model_part_count):
+            new_model_parts[i][key] = newly_resharded_tensors[i].clone()
+
+    def copy_key_to_all_parts(key):
+        assert_all_close(key)
+
+        for new_model_part in new_model_parts:
+            new_model_part[key] = model_parts[0][key].clone()
+
+    def handle_qkv_proj_glm(key):
+        parts = [model_parts[part_id][key] for part_id in range(len(model_parts))]
+
+        # Scatter each MP part along qkv
+        ks, vs, qs = [], [], []
+        for p in parts:
+            k, v, q = torch.split(p, p.shape[0] // 3)
+            ks.append(k)
+            vs.append(v)
+            qs.append(q)
+
+        # Gather old MP, then scatter into new MP
+        resharded_ks = torch.chunk(torch.cat(ks, dim=0), new_model_part_count)
+        resharded_vs = torch.chunk(torch.cat(vs, dim=0), new_model_part_count)
+        resharded_qs = torch.chunk(torch.cat(qs, dim=0), new_model_part_count)
+
+        # Gather each MP part along qkv
+        for i in range(new_model_part_count):
+            new_model_parts[i][key] = torch.cat(
+                (resharded_ks[i], resharded_vs[i], resharded_qs[i]), dim=0
+            )
+
+    def handle_layer_norm_and_position_embeddings_glm(key):
+        # Make sure that duplicated layernorms have duplicate weights
+        # NOTE: May not be necessary in GLM, but necessary in OPT
+        copy_key_to_all_parts(key)
+
+    def handle_dense_glm(key):
+        # Pytorch does left multiplication, so everything is transposed
+        if "dense_h_to_4h" in key:
+            # ColumnParallel weight and bias split along outer
+            if key.endswith("weight") or key.endswith("bias"):
+                consolidate_and_reshard(key, dim=0)
+            else:
+                raise KeyError(f"Key: {key} doesn't exist")
+
+        elif "dense_4h_to_h" in key or "dense" in key:
+            # RowParallel weight split along inner, bias replicated
+            if key.endswith("weight"):
+                consolidate_and_reshard(key, dim=1)
+
+            elif key.endswith("bias"):
+                copy_key_to_all_parts(key)
+
+            else:
+                raise KeyError(f"Key: {key} doesn't exist")
+
+    def handle_word_embeddings_glm(key):
+        consolidate_and_reshard(key, dim=0)
+
+    for key in model_parts[0]:
+        if "attention" in key and "layernorm" not in key:
+            if "query_key_value" in key:
+                handle_qkv_proj_glm(key)
+            elif "dense" in key:
+                handle_dense_glm(key)
+
+        elif "mlp" in key:
+            handle_dense_glm(key)
+
+        elif (
+            "input_layernorm" in key
+            or "post_attention_layernorm" in key
+            or "final_layernorm" in key
+            or "position_embeddings" in key
+        ):
+            handle_layer_norm_and_position_embeddings_glm(key)
+
+        elif "word_embeddings" in key:
+            handle_word_embeddings_glm(key)
+
+        else:
+            raise KeyError(f"Key: {key} doesn't exist")
+
+    assert model_parts[0].keys() == new_model_parts[0].keys(), "Keys don't match!"
+
+    return new_model_parts
+
+
 def reshard_model_parallel(
-    model_singleton_path,
-    part=0,
-    target_mp_size=512,
-    no_pad=False,
-    drop_optimizer_state=False,
+    src_path_prefix,
+    tgt_path_prefix,
+    target_mp_size,
+    model_type="opt",
 ):
-    try:
-        state = torch.load(model_singleton_path)
-    except FileNotFoundError:
-        logger.info(f"Model checkpoint {model_singleton_path} does not exist")
+    """
+    Reshard model parallel checkpoint to a different MP size. Model type can be
+    opt or glm. Note that opt and glm have different ways to case out the
+    resharding of model parallel layers.
 
-    state = upgrade_glm_sd(state, prefix="")
+    Usage:
+        GLM:
+            src_path_prefix = "/checkpoint/opt_test/original/TEST_glm_merge/glm-large-en-blank/250000/glmreshard"
+            tgt_path_prefix = "/checkpoint/opt_test/original/TEST_glm_merge/glm-large-en-blank/250000/glmreshard"
+            target_mp_size = 2
+            model_type="glm"
+        OPT:
+            src_path_prefix = "/checkpoint/opt_test/original/TEST_glm_merge/OPT-125M/megatronreshard"
+            tgt_path_prefix = "/checkpoint/opt_test/original/TEST_glm_merge/OPT-125M/megatronreshard"
+            target_mp_size = 4
+            model_type="opt"
+    """
+    all_ckpt_files = sorted(
+        list(glob(f"{src_path_prefix}*.pt")), key=_get_model_part_num
+    )
 
-    breakpoint()
+    if len(all_ckpt_files) > 1:
+        for ckpt_file in all_ckpt_files:
+            assert "model_part" in os.path.basename(ckpt_file)
+
+    print(f"Sharding {all_ckpt_files} into MP={target_mp_size}")
+
+    # Load the checkpoints and add weights to a dict
+    weights = []
+    names = []
+    t0 = time.time()
+
+    load_fn = load_and_pop_last_optimizer_state if model_type == "opt" else torch.load
+    assert model_type in ["opt", "glm"], f"Invalid model type selected: {model_type}"
+
+    format_fn = (
+        partial(upgrade_glm_sd, prefix="") if model_type == "glm" else lambda x: x
+    )
+
+    for p in tqdm(all_ckpt_files):
+        names.append(Path(p).name)
+        ckpt = load_fn(p)
+        ckpt = format_fn(ckpt)
+        weights.append(ckpt["model"])
+
+    num_parts = find_num_parts(names) if len(all_ckpt_files) > 1 else 1
+
+    model_parts = defaultdict()
+
+    assert len(weights) == num_parts
+    for p in range(num_parts):
+        model_parts[p] = weights[p]
+
+    # Reshard the weights in the dict
+    reshard_fn = reshard_megatron_parts if model_type == "opt" else reshard_glm_parts
+
+    resharded_models = reshard_fn(model_parts, target_mp_size)
+
+    # Save the resharded checkpoint
+    def save_checkpoint(weights_to_save, prefix):
+        if model_type == "opt":
+            ckpt_resharded = dict(
+                model=weights_to_save,
+                cfg=ckpt["cfg"],
+                extra_state=ckpt["extra_state"],
+                optimizer_history=ckpt["optimizer_history"],
+                args=ckpt.get("args"),
+            )
+        # TODO (mchoi): Make GLM save with similar cfg when configs are merged
+        elif model_type == "glm":
+            ckpt_resharded = dict(
+                model=weights_to_save,
+                cfg=None,
+                extra_state=None,
+                optimizer_history=None,
+                args=None,
+            )
+        save_path = f"{prefix}.pt"
+        logger.info(f"Saving to {save_path} ...")
+        torch.save(ckpt_resharded, save_path)
+        logger.info(f"Done after {time.time()-t0//60} minutes")
+        return save_path
+
+    saved_paths = []
+    for part_id, resharded_weights in enumerate(resharded_models):
+        saved_paths.append(
+            save_checkpoint(
+                resharded_weights, f"{tgt_path_prefix}-model_part-{part_id}"
+            )
+        )
+    return saved_paths
+
+
+def main(args):
+    # NOTE: This is temporarly running as a script
+    reshard_model_parallel(
+        args.src_path_prefix, args.tgt_path_prefix, args.target_mp_size, args.model_type
+    )
+
+
+if __name__ == "__main__":
+    args = prepare_args()
+    main(args)

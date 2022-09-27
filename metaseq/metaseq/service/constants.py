@@ -44,12 +44,14 @@ DEFAULT_PORT = 6969
 # reshard-model_part-6.pt
 # reshard-model_part-7.pt
 
-# TODO: change this for each model
-MODEL_PARALLEL = 2
-TOTAL_WORLD_SIZE = 2
+# TODO (mchoi): Make a registry of constant dicts we can multiplex across
+#               models and distributed systems
+MODEL_PARALLEL = 4
+TOTAL_WORLD_SIZE = 4
 
-CHECKPOINT_FOLDER = "/checkpoint/opt_test/original/OPT-6.7B"
+#CHECKPOINT_FOLDER = "/checkpoint/opt_test/original/OPT-6.7B"
 #CHECKPOINT_FOLDER = "/checkpoint/opt_test/original/OPT-125M"
+CHECKPOINT_FOLDER = "/checkpoint/opt_test/original/TEST_glm_merge/OPT-125M"
 
 ###
 
