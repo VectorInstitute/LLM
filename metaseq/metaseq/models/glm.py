@@ -699,12 +699,6 @@ class GLMModelConfig(MetaseqDataclass):
     old_checkpoint: bool = field(
         default=False, metadata={"help": "Loading the checkpoint from old library"}
     )
-    tokenizer_model_type: Optional[str] = field(
-        default=None,
-        metadata={
-            "help": "Model type to use for sentencepiece tokenization [bpe, char, unigram, word]"
-        },
-    )
 
 
 @register_model("glm_large", dataclass=GLMModelConfig)

@@ -46,36 +46,41 @@ DEFAULT_PORT = 6969
 
 # TODO (mchoi): Make a registry of constant dicts we can multiplex across
 #               models and distributed systems
-MODEL_PARALLEL = 4
-TOTAL_WORLD_SIZE = 4
+MODEL_PARALLEL = 2
+TOTAL_WORLD_SIZE = 2
 
 #CHECKPOINT_FOLDER = "/checkpoint/opt_test/original/OPT-6.7B"
 #CHECKPOINT_FOLDER = "/checkpoint/opt_test/original/OPT-125M"
-CHECKPOINT_FOLDER = "/checkpoint/opt_test/original/TEST_glm_merge/OPT-125M"
+CHECKPOINT_FOLDER = "/checkpoint/opt_test/original/TEST_glm_merge/glm-large-en-blank/250000"
 
 ###
 
 # tokenizer files
-BPE_MERGES = "/scratch/ssd002/projects/opt_test/gpt2-merges.txt"
-BPE_VOCAB = "/scratch/ssd002/projects/opt_test/gpt2-vocab.json"
+#BPE_MERGES = "/checkpoint/opt_test/original/TEST_glm_merge/glm-large-en-blank/english_tokenizer/roberta-vocab.txt"
+#BPE_VOCAB = "/checkpoint/opt_test/original/TEST_glm_merge/glm-large-en-blank/english_tokenizer/roberta-merges.txt"
+BPE_MERGES = "/checkpoint/opt_test/original/OPT-125M/gpt2-merges.txt"
+BPE_VOCAB = "/checkpoint/opt_test/original/OPT-125M/gpt2-vocab.json"
+#WORDPIECE_VOCAB = "/checkpoint/opt_test/original/TEST_glm_merge/glm-large-en-blank/english_tokenizer/bert-large-uncased-vocab.txt"
 # MODEL_FILE = os.path.join(CHECKPOINT_FOLDER, "reshard.pt")
 
 # MEGATRON stuff
-MODEL_FILE = os.path.join(CHECKPOINT_FOLDER, "megatronreshard.pt")
+MODEL_FILE = os.path.join(CHECKPOINT_FOLDER, "glmreshard.pt")
 
 
 LAUNCH_ARGS = [
     # TODO: Testing swiss
+    "--arch glm_large",
     "--memory-efficient-fp16",
     f"--model-parallel-size {MODEL_PARALLEL}",
     f"--distributed-world-size {TOTAL_WORLD_SIZE}",
     "--task language_modeling",
     f"--bpe-merges {BPE_MERGES}",
     f"--bpe-vocab {BPE_VOCAB}",
+    #f"--workdpiece-vocab {WORDPIECE_VOCAB}",
     "--bpe hf_byte_bpe",
     f"--merges-filename {BPE_MERGES}",  # TODO(susanz): hack for getting interactive_hosted working on public repo
     f"--vocab-filename {BPE_VOCAB}",  # TODO(susanz): hack for getting interactive_hosted working on public repo
-    f"--path {CHECKPOINT_FOLDER}/megatronreshard.pt",
+    f"--path {CHECKPOINT_FOLDER}/glmreshard.pt",
     "--beam 1 --nbest 1",
     "--distributed-port 13000",
     "--checkpoint-shard-count 1",

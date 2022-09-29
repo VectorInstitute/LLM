@@ -20,6 +20,7 @@ from metaseq.dataclass.configs import (
     OptimizationConfig,
     ReshardConfig,
 )
+"""
 from metaseq.dataclass.swiss_configs import (
     SwissDistributedTrainingConfig,
     SwissModelConfig,
@@ -29,11 +30,12 @@ from metaseq.dataclass.swiss_configs import (
     SwissTextGenerationConfig,
     SwissTokenizationConfig,
 )
+"""
 from metaseq.dataclass.utils import gen_parser_from_dataclass
 
 
 # TODO: This is not used yet. Make this a config group later
-def get_swiss_parser(default_task="swiss_glm"):
+def get_swiss_parser(default_task="translation"):
     """
     Custom parser for SwissArmyTransformer GLM based on metaseq generation
     parser
@@ -75,6 +77,11 @@ def get_generation_parser(default_task="translation"):
     add_distributed_training_args(parser, default_world_size=1)
     add_generation_args(parser)
     add_checkpoint_args(parser)
+
+    #add_swiss_text_generation_args(parser)
+    #add_swiss_evaluation_args(parser)
+    #add_swiss_data_args(parser)
+    #add_swiss_tokenization_args(parser)
     return parser
 
 
@@ -299,6 +306,7 @@ def add_swiss_data_args(parser):
     group = parser.add_argument_group("swiss_data")
     gen_parser_from_dataclass(group, SwissDataConfig())
     return group
+
 
 def add_swiss_text_generation_args(parser):
     """Make swiss text generation args from config dataclass"""

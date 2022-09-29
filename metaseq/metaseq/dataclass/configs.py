@@ -761,80 +761,137 @@ class EvalLMConfig(MetaseqDataclass):
 
 
 @dataclass
-class SwissModelConfig(MetaseqDataclass):
-    num_layers: int = field(
-        default=24,
-        metadata={"help": "Number of decoder layers"}
+class SwissTextGenerationConfig(MetaseqDataclass):
+    sampling_strategy: str = field(
+        default="BaseStrategy",
+        metadata={"help": "Strategy to use for generation"},
     )
-    hidden_size: int = field(
-        default=1024,
-        metadata={"help": "Transformer hidden dim size"}
+    temperature: float = field(
+        default=1.0,
+        metadata={"help": "Sampling temperature"}
     )
-    num_attention_heads: int = field(
-        default=16,
-        metadata={"help": "Number of transformer attention heads"}
+    top_p: float = field(
+        default=0.0,
+        metadata={"help": "Top p for sampling"}
     )
-    vocab_size: int = field(
+    top_k: int = field(
         default=0,
-        metadata={"help": "Vocab size for tokenization"}
+        metadata={"help": "Top k for sampling"}
     )
-    max_sequence_length: int = field(
-        default=512,
-        metadata={"help": "Max number of position embeddings to use"}
+    num_beams: int = field(
+        default=1,
+        metadata={"help": "Number of beams to use for sampling"}
     )
-    layernorm_order: str = field(
-        default="pre",
-        metadata={"help": "Order of layernorm (post, pre, sandwich)"}
+    length_penalty: float = field(
+        default=0.0,
+        metadata={"help": ""}
     )
-    inner_hidden_size: Optional[int] = field(
-        default=None,
-        metadata={"help": "Inner hidden size in MLP, None meaning 4 * hidden size"}
+    no_repeat_ngram_size: int = field(
+        default=0,
+        metadata={"help": ""}
     )
-    hidden_size_per_attention_head: Optional[int] = field(
-        default=None,
-        metadata={"help": "Hidden size per attention head in self and cross attention. None means hidden_sized / num_attention_heads"}
+    min_tgt_length: int = field(
+        default=0,
+        metadata={"help": ""}
     )
-    #model_parallel_size: int = field(
-    #    default=1,
-    #    metadata={"help": "Size of the model parallel"}
-    #)
-    #skip_init: bool = field(
-    #    default=False,
-    #    metadata={"help": "Skip model initialization"}
-    #)
-    use_gpu_initialization: bool = field(
+    out_seq_length: int = field(
+        default=256,
+        metadata={"help": ""}
+    )
+    input_source: str = field(
+        default="interactive",
+        metadata={"help": "What input mode to use, interactive or path"}
+    )
+    output_path: str = field(
+        default="./samples",
+        metadata={"help": "Path to place the generated samples"}
+    )
+    with_id: bool = field(
         default=False,
-        metadata={"help": "Initialize model on GPU"}
+        metadata={"help": "If each line is prepended with an id"}
     )
-    layernorm_epsilon: float = field(
-        default=1e-5,
-        metadata={"help": "Layer norm epsilon"}
+    max_inference_batch_size: int = field(
+        default=12,
+        metadata={"help": ""}
     )
-    hidden_dropout: float = field(
-        default=0.1,
-        metadata={"help": "Dropout prob for hidden state"}
-    )
-    attention_dropout: float = field(
-        default=0.1,
-        metadata={"help": "Dropout prob for attention weights"}
-    )
-    make_vocab_size_divisible_by: int = field(
-        default=128,
-        metadata={"help": "Pad the vocab size to be divisible by this value"}
-    )
-    sandwich_ln: bool = field(
-        default=False,
-        metadata={"help": "Add sandwich ln in cogview"}
+    device: int = field(
+        default=-1,
+        metadata={"help": ""}
     )
 
 
 @dataclass
-class SwissTrainingConfig(MetaseqDataclass):
-    #TODO: Add constant MODE_CHOICES = [finetune, inference]
-    mode: str = field(
-        default="inference",
-        metadata={"help": "pretrain, finetune or inference"}
+class SwissEvaluationConfig(MetaseqDataclass):
+    eval_batch_size: Optional[int] = field(
+        default=None,
+        metadata={"help": "Data loader batch size for evaluation dataset"}
     )
+    eval_iters: int = field(
+        default=100,
+        metadata={"help": "Number of iterations to run for evaluation"}
+    )
+    eval_interval: Optional[int] = field(
+        default=None,
+        metadata={"help": "Interval between running evaluation on validation set"}
+    )
+    strict_eval: bool = field(
+        default=False,
+        metadata={"help": "Won't enlarge or randomly map eval ata, and eval full eval data"}
+    )
+
+
+@dataclass
+class SwissDataConfig(MetaseqDataclass):
+    # TODO: Several of these fields are lists by default in GLM
+    train_data: Optional[str] = field(
+        default=None,
+        metadata={"help": "Whitespace separated filenames or corpora names for training"}
+    )
+    train_data_weights: Optional[str] = field(
+        default=None,
+        metadata={"help": "Scaling factors for different train data, must be the same number"}
+    )
+    iterable_dataset: bool = field(
+        default=False,
+        metadata={"help": "Iterable"}
+    )
+    valid_data: Optional[str] = field(
+        default=None,
+        metadata={"help": "Filename for validation data"}
+    )
+    test_data: Optional[str] = field(
+        default=None,
+        metadata={"help": "Filename for test data"}
+    )
+    split: Optional[str] = field(
+        default=None,
+        metadata={"help": "Comma separated list of proportions for training"}
+    )
+    num_workers: int = field(
+        default=1,
+        metadata={"help": " Number of workers to use for dataloading"}
+    )
+    block_size: int = field(
+        default=10000,
+        metadata={"help": "Size of lock to reduce memory in dataset, ignore it for most users"}
+    )
+
+
+@dataclass
+class SwissTokenizationConfig(MetaseqDataclass):
+    tokenizer_type: Optional[str] = field(
+        default=None,
+        metadata={"help": "Tokenizer type from GLM tokenizer registry"}
+    )
+    tokenizer_model_type: Optional[str] = field(
+        default=None,
+        metadata={"help": "Model architecture-specific tokenizer model"}
+    )
+    img_tokenizer_path: Optional[str] = field(
+        default=None,
+        metadata={"help": "Checkpoint path of image tokenizer"},
+    )
+
 
 @dataclass
 class MetaseqConfig(MetaseqDataclass):
@@ -848,9 +905,10 @@ class MetaseqConfig(MetaseqDataclass):
     eval_lm: EvalLMConfig = EvalLMConfig()
     reshard: ReshardConfig = ReshardConfig()
 
-    # New configs for swiss army transformer
-    #swiss_model: SwissModelConfig = SwissModelConfig()
-    #swiss_training: SwissTrainingConfig = SwissTrainingConfig()
+#    swiss_text_generation: SwissTextGenerationConfig = SwissTextGenerationConfig()
+    #swiss_eval: SwissEvaluationConfig = SwissEvaluationConfig()
+    #swiss_data: SwissDataConfig = SwissDataConfig()
+    #swiss_tokenization: SwissTokenizationConfig = SwissTokenizationConfig()
 
     model: Any = MISSING
     task: Any = MISSING

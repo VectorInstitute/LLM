@@ -367,7 +367,6 @@ def convert_namespace_to_omegaconf(args: Namespace) -> DictConfig:
     cfg = OmegaConf.create(
         OmegaConf.to_container(composed_cfg, resolve=True, enum_to_str=True)
     )
-
     # hack to be able to set Namespace in dict config. this should be removed when we update to newer
     # omegaconf version that supports object flags, or when we migrate all existing models
     from omegaconf import _utils
@@ -375,10 +374,7 @@ def convert_namespace_to_omegaconf(args: Namespace) -> DictConfig:
     old_primitive = _utils.is_primitive_type
     _utils.is_primitive_type = lambda _: True
 
-    # New swiss args
-    # TODO: Init MISSING swiss args
-    
-    # Default metaseq args
+    # TODO (mchoi): Add swiss configs here
     if cfg.task is None and getattr(args, "task", None):
         cfg.task = Namespace(**vars(args))
         from metaseq.tasks import TASK_REGISTRY

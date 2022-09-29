@@ -123,11 +123,12 @@ def load_checkpoint(model, cfg, load_path=None, prefix=""):
     return iteration
 
 
-def update_args_with_file(cfg, path):
+def update_args_with_file(cfg):
     """
     Open the metadata file included with pretrained SwissArmyTransformer, and
     replace main cfg default args with those found in the metadata file
     """
+    path = os.path.join(os.path.dirname(cfg.common_eval.path), "model_config.json")
     with open(path, "r", encoding="utf-8") as f:
         config = json.load(f)
 
@@ -146,16 +147,22 @@ def update_args_with_file(cfg, path):
     OmegaConf.set_struct(
         cfg, False
     )  # This should only be used when loading configs from ckpts
-    for k in config.keys():
-        if k not in cfg.model:
-            cfg.model.k = config[k]
 
     # Overwrite duplicate keys in cfg.model with loaded model config
-    for k in cfg.model.keys():
-        if k in config and cfg.model[k] != config[k]:
-            if cfg.distributed_training.distributed_rank == 0:
-                logger.info(f"Replacing {k}:{cfg.model[k]} with {config[k]}")
-            cfg.model[k] = config[k]
+    # Need to iterate over metaseq cfg to correctly place glm configs in the
+    # right config group
+    for cfg_group in cfg.keys():
+        if cfg[cfg_group] is None:
+            continue
+
+        for k in cfg[cfg_group]:
+            if k in config and cfg[cfg_group][k] != config[k]:
+                if cfg.distributed_training.distributed_rank == 0:
+                    logger.info(f"Replacing {k}:{cfg[cfg_group][k]} with {config[k]}")
+                value = config.pop(k)
+                cfg[cfg_group][k] = value
+
+    logger.info(f"Left-over keys and values from loaded config: {config}")
 
     OmegaConf.set_struct(cfg, True)
     return cfg

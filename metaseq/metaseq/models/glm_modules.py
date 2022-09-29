@@ -3,7 +3,6 @@ import math
 import torch
 
 from megatron.mpu.layers import (
-    VocabParallelEmbedding,
     ColumnParallelLinear,
     RowParallelLinear,
 )

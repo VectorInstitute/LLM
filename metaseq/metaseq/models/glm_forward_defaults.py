@@ -75,12 +75,13 @@ def attention_forward_default(self, hidden_states, mask, **kw_args):
     if "attention_fn" in self.hooks:
         attention_fn = self.hooks["attention_fn"]
 
-    mixed_raw_layer = self.query_key_value(hidden_states)
+    mixed_raw_layer = self.query_key_value(hidden_states)[0]
     (
         mixed_query_layer,
         mixed_key_layer,
         mixed_value_layer,
     ) = split_tensor_along_last_dim(mixed_raw_layer, 3)
+    # TODO (mchoi): Fairseq megatron fork always returns a tuple!
 
     dropout_fn = self.attention_dropout if self.training else None
 
@@ -97,7 +98,7 @@ def attention_forward_default(self, hidden_states, mask, **kw_args):
         self.hidden_size_per_partition,
     )
     context_layer = context_layer.view(*new_context_layer_shape)
-    output = self.dense(context_layer)
+    output = self.dense(context_layer)[0]
 
     if self.training:
         output = self.output_dropout(output)
@@ -112,8 +113,8 @@ def cross_attention_forward_default(
     if "attention_fn" in self.hooks:
         attention_fn = self.hooks["attention_fn"]
 
-    mixed_query_layer = self.query(hidden_states)
-    mixed_x_layer = self.key_value(encoder_outputs)
+    mixed_query_layer = self.query(hidden_states)[0]
+    mixed_x_layer = self.key_value(encoder_outputs)[0]
     (mixed_key_layer, mixed_value_layer) = split_tensor_along_last_dim(mixed_x_layer, 2)
 
     dropout_fn = self.attention_dropout if self.training else None
@@ -138,7 +139,7 @@ def cross_attention_forward_default(
     context_layer = context_layer.view(*new_context_layer_shape)
 
     # Output. [b, s, h]
-    output = self.dense(context_layer)
+    output = self.dense(context_layer)[0]
     if self.training:
         output = self.output_dropout(output)
     return output
@@ -146,9 +147,9 @@ def cross_attention_forward_default(
 
 def mlp_forward_default(self, hidden_states, **kw_args):
     self = self.transformer.layers[kw_args["layer_id"]].mlp
-    intermediate_parallel = self.dense_h_to_4h(hidden_states)
+    intermediate_parallel = self.dense_h_to_4h(hidden_states)[0]
     intermediate_parallel = self.activation_func(intermediate_parallel)
-    output = self.dense_4h_to_h(intermediate_parallel)
+    output = self.dense_4h_to_h(intermediate_parallel)[0]
     return output
 
 

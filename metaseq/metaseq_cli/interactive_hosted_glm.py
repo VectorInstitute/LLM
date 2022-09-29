@@ -33,7 +33,7 @@ from metaseq.distributed import utils as distributed_utils
 from metaseq.hub_utils import GeneratorInterface
 from metaseq.service.queue import PriorityQueueRingShard
 from metaseq.service.workers import WorkItem
-from metaseq.service.constants import (
+from metaseq.service.glm_constants import (
     MAX_SEQ_LEN,
     MAX_BATCH_TOKENS,
     MAX_BEAM,
@@ -45,7 +45,6 @@ from metaseq.service.constants import (
 from metaseq.service.utils import get_my_ip, encode_fn, build_logger
 from metaseq.service.responses import OAIResponse
 
-from metaseq.models.glm import GLMModel, CachedAutoregressiveMixin
 from hook_utils import get_activation_capture_hook_dict, apply_forward_hook
 
 
@@ -247,8 +246,8 @@ def batching_loop(timeout=100, max_tokens=MAX_BATCH_TOKENS):
                                 val = v[
                                     i,
                                     :,
-                                    1: num_real_tokens + 1,
-                                    1: num_real_tokens + 1,
+                                    1 : num_real_tokens + 1,
+                                    1 : num_real_tokens + 1,
                                 ].clone()
                             else:
                                 # cut off the starting token because metaseq
@@ -271,29 +270,6 @@ def batching_loop(timeout=100, max_tokens=MAX_BATCH_TOKENS):
                 continue
 
 
-def swiss_worker_main(cfg: MetaseqConfig, namespace_args=None):
-    if torch.distributed.get_rank() == 0:
-        print(f"cfg r0: r{cfg.distributed_training.distributed_rank}")
-
-    else:
-        print(f"cfg r1: r{cfg.distributed_training.distributed_rank}")
-
-    # Load GLM
-    model, cfg = GLMModel.from_pretrained(
-        cfg,
-        'glm-large-en-blank',
-        home_path="/checkpoint/opt_test/original/TEST_glm_merge"
-    )
-    breakpoint()
-    model.add_mixin('auto-regressive', CachedAutoregressiveMixin())
-
-    breakpoint()
-
-    # TODO (mchoi): Bring main from SwissArmyTransformer/examples/glm/glm_inference.py
-    with torch.no_grad():
-        main(model, args)
-
-
 def worker_main(cfg1: MetaseqConfig, namespace_args=None):
     # disable multithreading in tokenizers and torch, as different Flask threads
     # may then fight for resources.
@@ -310,6 +286,7 @@ def worker_main(cfg1: MetaseqConfig, namespace_args=None):
 
     generator = GeneratorInterface(cfg)
     models = generator.load_model()  # noqa: F841
+    breakpoint()
 
     if torch.distributed.get_rank() == 0:
         print(models[0])    # Cleaner to print
@@ -546,7 +523,7 @@ def index():
 
 def cli_main():
     """
-    Hosted version of the web UI for SwissArmyTransformer.
+    Hosted version of the web UI for generation.
     """
 
     global port, MODE, cfg
@@ -560,13 +537,11 @@ def cli_main():
     args = options.parse_args_and_arch(parser, input_args=flat_launch_args)
     args.data = os.path.dirname(args.path)  # hardcode the data arg
     port = DEFAULT_PORT
-
     cfg = convert_namespace_to_omegaconf(args)
-
     cfg.distributed_training.distributed_world_size = TOTAL_WORLD_SIZE
 
-    distributed_utils.call_main(cfg, swiss_worker_main, namespace_args=args)
+    distributed_utils.call_main(cfg, worker_main, namespace_args=args)
 
 
 if __name__ == "__main__":
-    cli_main()
+    cli_main(glm_)

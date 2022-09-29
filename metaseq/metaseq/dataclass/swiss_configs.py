@@ -13,6 +13,7 @@ from metaseq.dataclass.constants import (
     CLIP_GRAD_NORM_TYPE_CHOICES,
 )
 
+# NOTE: This file is for config reference only. Do not use
 
 @dataclass
 class SwissModelConfig(MetaseqDataclass):
