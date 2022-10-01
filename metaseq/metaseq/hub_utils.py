@@ -498,6 +498,9 @@ class GeneratorInterface:
             model.make_generation_fast_()
             return model
 
+        model = task.build_model(self.cfg.model)
+        breakpoint()
+
         # Load the model
         overrides = ast.literal_eval(self.cfg.common_eval.model_overrides)
         logger.info("loading model(s) from {}".format(self.cfg.common_eval.path))

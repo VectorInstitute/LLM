@@ -16,7 +16,7 @@ from omegaconf import DictConfig
 from torch import Tensor
 
 from metaseq.dataclass.utils import gen_parser_from_dataclass
-from metaseq.models import BaseDecoder
+from metaseq.models import BaseEncoder, BaseDecoder
 
 logger = logging.getLogger(__name__)
 
@@ -276,3 +276,53 @@ class LanguageModel(BaseModel):
     @property
     def supported_targets(self):
         return {"future"}
+
+
+class TranslationModel(BaseModel):
+    """Abstraction of a transformer."""
+    def __init__(self, encoder, decoder):
+        super().__init__()
+        assert encoder is not None and decoder is not None
+
+        self.encoder = encoder
+        self.decoder = decoder
+
+        if self.encoder is not None:
+            check_type(self.encoder, BaseEncoder)
+        if self.decoder is not None:
+            check_type(self.decoder, BaseDecoder)
+
+    def forward(self, src_tokens, src_lengths, **kwargs):
+        """
+        Run the forward pass for a generic transformer model, which can have
+        both encoder and decoder, or only one of the two. 
+
+        Feeds a batch of tokens through the model to generate some output.
+
+        Args:
+            src_tokens (LongTensor): Input tokens to the model of shape
+                `(batch, tgt_len)`.
+            src_lengths (LongTensor): Source sentence lengths of shape `(batch)`.
+        Returns:
+            tuple:
+                1. Model output tensor.
+                2. Dictionary with auxillary data.
+        """
+        encoder_output = self.encoder(src_tokens, **kwargs)
+        decoder_output = self.decoder(encoder_output, **kwargs)
+        return decoder_output
+
+    def forward_encoder(self, src_tokens, **kwargs):
+        return self.encoder(src_tokens, **kwargs)
+
+    def forward_decoder(self, src_tokens, **kwargs):
+        return self.decoder(src_tokens, **kwargs)
+
+    def max_positions(self):
+        return self.decoder.max_positions()
+
+    def max_encoder_positions(self):
+        return self.encoder.max_positions
+
+    def max_decoder_positions(self):
+        return self.decoder.max_positions

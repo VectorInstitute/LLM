@@ -115,8 +115,8 @@ class TransformerEncoderLayer(nn.Module):
         self.activation_fn = utils.get_activation_fn(
             activation=getattr(args, "activation_fn", "relu") or "relu"
         )
-        self.fc1 = Linear(self.embed_dim, ffn_dim)
-        self.fc2 = Linear(ffn_dim, self.embed_dim)
+        self.fc1 = self.build_fc1(self.embed_dim, ffn_dim)
+        self.fc2 = self.build_fc2(ffn_dim, self.embed_dim)
         self.final_layer_norm = LayerNorm(self.embed_dim)
 
     def build_self_attention(self, embed_dim, args):

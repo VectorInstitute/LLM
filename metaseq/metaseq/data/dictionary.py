@@ -123,6 +123,9 @@ class Dictionary:
 
     def add_symbol(self, word, n=1, overwrite=False):
         """Adds a word to the dictionary"""
+        if word is None:
+            return None
+
         if word in self.indices and not overwrite:
             idx = self.indices[word]
             self.count[idx] = self.count[idx] + n

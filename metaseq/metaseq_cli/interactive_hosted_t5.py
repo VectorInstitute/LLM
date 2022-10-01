@@ -33,7 +33,7 @@ from metaseq.distributed import utils as distributed_utils
 from metaseq.hub_utils import GeneratorInterface
 from metaseq.service.queue import PriorityQueueRingShard
 from metaseq.service.workers import WorkItem
-from metaseq.service.constants import (
+from metaseq.service.t5_constants import (
     MAX_SEQ_LEN,
     MAX_BATCH_TOKENS,
     MAX_BEAM,
@@ -286,6 +286,7 @@ def worker_main(cfg1: MetaseqConfig, namespace_args=None):
 
     generator = GeneratorInterface(cfg)
     models = generator.load_model()  # noqa: F841
+    breakpoint()
 
     if torch.distributed.get_rank() == 0:
         print(models[0])    # Cleaner to print
@@ -539,7 +540,6 @@ def cli_main():
     cfg = convert_namespace_to_omegaconf(args)
     cfg.distributed_training.distributed_world_size = TOTAL_WORLD_SIZE
 
-    breakpoint()
     distributed_utils.call_main(cfg, worker_main, namespace_args=args)
 
 

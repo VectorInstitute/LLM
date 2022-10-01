@@ -33,6 +33,16 @@ def get_training_parser(default_task="translation"):
     return parser
 
 
+def get_translation_parser(default_task="translation"):
+    parser = get_parser("Translation", default_task)
+    add_model_args(parser)
+    add_dataset_args(parser, gen=True)
+    add_distributed_training_args(parser, default_world_size=1)
+    add_generation_args(parser)
+    add_checkpoint_args(parser)
+    return parser
+
+
 def get_generation_parser(default_task="translation"):
     parser = get_parser("Generation", default_task)
     add_dataset_args(parser, gen=True)
