@@ -22,6 +22,11 @@ try:
 except (ImportError, ModuleNotFoundError):
     has_megatron_submodule = False
 
+from metaseq.quantization import (
+    QuantizedColumnParallelLinear,
+    QuantizedRowParallelLinear,
+)
+
 
 class ModelParallelTransformerEncoderLayer(TransformerEncoderLayer):
     """Encoder layer block over multiple gpus.
@@ -65,6 +70,8 @@ class ModelParallelTransformerDecoderLayer(TransformerDecoderLayer):
         initialize_params_on_gpu,
         full_megatron_init,
         megatron_init_sigma,
+        quantize,
+        quantize_bit_width,
         dtype,
     ):
         def _init_method_bias(bias):
@@ -80,16 +87,30 @@ class ModelParallelTransformerDecoderLayer(TransformerDecoderLayer):
             init_method_weights = _weight_init
             init_method_bias = _init_method_bias
 
-        return ColumnParallelLinear(
-            input_dim,
-            output_dim,
-            gather_output=False,
-            init_method=init_method_weights,
-            skip_bias_add=self.skip_bias_add,
-            init_method_bias=init_method_bias,
-            use_cpu_initialization=not initialize_params_on_gpu,
-            dtype=dtype,
-        )
+        parallel_layer = ColumnParallelLinear if not quantize else QuantizedColumnParallelLinear
+        if quantize:
+            return QuantizedColumnParallelLinear(
+                quantize_bit_width,
+                input_dim,
+                output_dim,
+                gather_output=False,
+                init_method=init_method_weights,
+                skip_bias_add=self.skip_bias_add,
+                init_method_bias=init_method_bias,
+                use_cpu_initialization=not initialize_params_on_gpu,
+                dtype=dtype,
+            )
+        else:
+            return ColumnParallelLinear(
+                input_dim,
+                output_dim,
+                gather_output=False,
+                init_method=init_method_weights,
+                skip_bias_add=self.skip_bias_add,
+                init_method_bias=init_method_bias,
+                use_cpu_initialization=not initialize_params_on_gpu,
+                dtype=dtype,
+            )
 
     def build_fc2(
         self,
@@ -99,6 +120,8 @@ class ModelParallelTransformerDecoderLayer(TransformerDecoderLayer):
         full_megatron_init,
         megatron_init_sigma,
         num_layers,
+        quantize,
+        quantize_bit_width,
         dtype,
     ):
         skip_bias_add = self.skip_bias_add
@@ -109,15 +132,27 @@ class ModelParallelTransformerDecoderLayer(TransformerDecoderLayer):
         else:
             init_method_weights = _weight_init
 
-        fc2 = RowParallelLinear(
-            input_dim,
-            output_dim,
-            input_is_parallel=True,
-            init_method=init_method_weights,
-            skip_bias_add=skip_bias_add,
-            use_cpu_initialization=not initialize_params_on_gpu,
-            dtype=dtype,
-        )
+        if quantize:
+            fc2 = QuantizedRowParallelLinear(
+                quantize_bit_width,
+                input_dim,
+                output_dim,
+                input_is_parallel=True,
+                init_method=init_method_weights,
+                skip_bias_add=skip_bias_add,
+                use_cpu_initialization=not initialize_params_on_gpu,
+                dtype=dtype,
+            )
+        else:
+            fc2 = RowParallelLinear(
+                input_dim,
+                output_dim,
+                input_is_parallel=True,
+                init_method=init_method_weights,
+                skip_bias_add=skip_bias_add,
+                use_cpu_initialization=not initialize_params_on_gpu,
+                dtype=dtype,
+            )
         if not full_megatron_init:
             # Copy nn.linear initialization to get same initialization as of non-model-parallel.
             # fan_in, _ = nn.init._calculate_fan_in_and_fan_out(fc2.weight)
@@ -139,6 +174,8 @@ class ModelParallelTransformerDecoderLayer(TransformerDecoderLayer):
             megatron_init_sigma=getattr(args, "megatron_init_sigma", 0.006),
             num_layers=args.decoder_layers,
             dtype=self._get_model_init_dtype(),
+            quantize=getattr(args, "_quantize", False),
+            quantize_bit_width=getattr(args, "_quantize_bit_width", None),
         )
 
     def build_encoder_attention(self, embed_dim, args, **unused_kwargs):

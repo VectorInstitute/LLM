@@ -24,6 +24,10 @@ from transformers.models.opt.modeling_opt import (
     OPTAttention,
     OPTLearnedPositionalEmbedding,
 )
+from metaseq.quantization import (
+    QuantizedColumnParallelLinear,
+    QuantizedRowParallelLinear,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -77,7 +81,7 @@ def opt_forward_hook_fn(registered_name, save_dict, aux, m, _, outputs):
     type_m = type(m)
 
     # every rank needs to do this
-    if type_m == ColumnParallelLinear:
+    if type_m == ColumnParallelLinear or type_m == QuantizedColumnParallelLinear:
         if not m.gather_output:
             outputs = (
                 gather_from_tensor_model_parallel_region(outputs[0]),
@@ -105,7 +109,7 @@ def opt_forward_hook_fn(registered_name, save_dict, aux, m, _, outputs):
         return
 
     # too scared to do isinstance checks
-    if type_m == ColumnParallelLinear:
+    if type_m == ColumnParallelLinear or type_m == QuantizedColumnParallelLinear:
 
         output = outputs[0]
 
@@ -125,7 +129,7 @@ def opt_forward_hook_fn(registered_name, save_dict, aux, m, _, outputs):
         elif "fc" in layer_type:
             output = rearrange(output, "(s b) d -> b s d", b=aux[0])
 
-    elif type_m == RowParallelLinear:
+    elif type_m == RowParallelLinear or type_m == QuantizedRowParallelLinear:
 
         output = outputs[0]
 

@@ -76,9 +76,9 @@ def init_opt_hf_mappings(num_layers):
         "transformer_layers": [f"decoder.layers.{i}" for i in range(num_layers - 1)] + ["decoder.layer_norm"],
         "attention_maps": [f"decoder.layers.{i}.self_attn.dropout_module" for i in range(num_layers)],
         "self_attention": [f"decoder.layers.{i}.self_attn" for i in range(num_layers)],
-        "q_proj": [f"decoder.layers.{i}.self_attn.q_proj" for i in range(num_layers)],
-        "k_proj": [f"decoder.layers.{i}.self_attn.k_proj" for i in range(num_layers)],
-        "v_proj": [f"decoder.layers.{i}.self_attn.v_proj" for i in range(num_layers)],
+        #"q_proj": [f"decoder.layers.{i}.self_attn.q_proj" for i in range(num_layers)],
+        #"k_proj": [f"decoder.layers.{i}.self_attn.k_proj" for i in range(num_layers)],
+        #"v_proj": [f"decoder.layers.{i}.self_attn.v_proj" for i in range(num_layers)],
         "self_attention_layer_norm": [f"decoder.layers.{i}.self_attn_layer_norm" for i in range(num_layers)],
         "fc1": [f"decoder.layers.{i}.fc1" for i in range(num_layers)],
         "fc2": [f"decoder.layers.{i}.fc2" for i in range(num_layers)],
@@ -101,9 +101,9 @@ def init_opt_hf_mappings(num_layers):
             get_hf_activations,
             lambda output: output["attentions"]],
         "self_attention": [f"model.decoder.layers.{i}.self_attn" for i in range(num_layers)],
-        "q_proj": [f"model.decoder.layers.{i}.self_attn.q_proj" for i in range(num_layers)],
-        "k_proj": [f"model.decoder.layers.{i}.self_attn.k_proj" for i in range(num_layers)],
-        "v_proj": [f"model.decoder.layers.{i}.self_attn.v_proj" for i in range(num_layers)],
+        #"q_proj": [f"model.decoder.layers.{i}.self_attn.q_proj" for i in range(num_layers)],
+        #"k_proj": [f"model.decoder.layers.{i}.self_attn.k_proj" for i in range(num_layers)],
+        #"v_proj": [f"model.decoder.layers.{i}.self_attn.v_proj" for i in range(num_layers)],
         "self_attention_layer_norm": [f"model.decoder.layers.{i}.self_attn_layer_norm" for i in range(num_layers)],
         "fc1": [f"model.decoder.layers.{i}.fc1" for i in range(num_layers)],
         "fc2": [f"model.decoder.layers.{i}.fc2" for i in range(num_layers)],
@@ -157,7 +157,7 @@ def retrieve_hf_activations(mapping, client, model, prompts, aux):
         )
 
         with apply_forward_hook(model, hook_dict):
-            results = get_hf_logits(client, model, prompts)
+            _ = get_hf_logits(client, model, prompts)
 
         return acts
 

@@ -351,7 +351,7 @@ class TransformerDecoder(IncrementalDecoder):
         else:
             self.layers = nn.ModuleList(layers)
 
-        _log_weight_stats(self.embed_tokens.weight, "embed tokens")
+        #_log_weight_stats(self.embed_tokens.weight, "embed tokens")
 
         self.num_layers = len(self.layers)
 
@@ -435,8 +435,9 @@ class TransformerDecoder(IncrementalDecoder):
 
     def build_decoder_layer(self, args, no_encoder_attn=False):
         layer = self.build_base_decoder_layer(args, no_encoder_attn)
-        for name, param in layer.named_parameters():
-            _log_weight_stats(param, name)
+        # TODO (mchoi): _log_weight_stats breaks for int8
+        #for name, param in layer.named_parameters():
+        #    _log_weight_stats(param, name)
         if getattr(args, "fsdp_checkpoint_wrap_layer_frequency", 1) > 1:
             return layer
         checkpoint = getattr(args, "checkpoint_activations", False)

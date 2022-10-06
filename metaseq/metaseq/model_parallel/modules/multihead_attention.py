@@ -5,6 +5,7 @@
 
 import math
 from functools import partial
+import logging
 from typing import Dict, Optional, Tuple
 
 import torch
@@ -13,6 +14,10 @@ from torch import Tensor, nn
 from metaseq import utils
 from metaseq.incremental_decoding_utils import with_incremental_state
 from metaseq.modules.dropout import Dropout
+from metaseq.quantization import (
+    QuantizedColumnParallelLinear,
+    QuantizedRowParallelLinear,
+)
 
 try:
     from megatron.mpu import (
@@ -32,7 +37,6 @@ try:
 except (ImportError, ModuleNotFoundError):
     has_megatron_submodule = False
 
-import logging
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +63,8 @@ class ModelParallelMultiheadAttention(nn.Module):
         full_megatron_init=False,
         megatron_init_sigma=None,
         num_layers=None,
+        quantize=False,
+        quantize_bit_width=None,
         dtype=torch.float32,
     ):
         super().__init__()
@@ -188,16 +194,30 @@ class ModelParallelMultiheadAttention(nn.Module):
                 else:
                     init_method_bias = partial(_init_method_bias_gpu, self.kdim)
 
-            self.qkv_proj = ColumnParallelLinear(
-                self.kdim,
-                3 * embed_dim,
-                bias=bias,
-                gather_output=False,
-                init_method=init_method_weights,
-                init_method_bias=init_method_bias,
-                use_cpu_initialization=use_cpu_initialization,
-                dtype=dtype,
-            )
+            if quantize:
+                self.qkv_proj = QuantizedColumnParallelLinear(
+
+                    quantize_bit_width,
+                    self.kdim,
+                    3 * embed_dim,
+                    bias=bias,
+                    gather_output=False,
+                    init_method=init_method_weights,
+                    init_method_bias=init_method_bias,
+                    use_cpu_initialization=use_cpu_initialization,
+                    dtype=dtype,
+                )
+            else:
+                self.qkv_proj = ColumnParallelLinear(
+                    self.kdim,
+                    3 * embed_dim,
+                    bias=bias,
+                    gather_output=False,
+                    init_method=init_method_weights,
+                    init_method_bias=init_method_bias,
+                    use_cpu_initialization=use_cpu_initialization,
+                    dtype=dtype,
+                )
         else:
 
             def _init_method_weight(weight):
@@ -254,16 +274,29 @@ class ModelParallelMultiheadAttention(nn.Module):
             init_method_weights = megatron_utils.scaled_init_method_normal(
                 megatron_init_sigma, num_layers
             )
-        self.out_proj = RowParallelLinear(
-            embed_dim,
-            embed_dim,
-            bias=bias,
-            input_is_parallel=True,
-            init_method=init_method_weights,
-            skip_bias_add=True,
-            use_cpu_initialization=use_cpu_initialization,
-            dtype=dtype,
-        )
+        if quantize:
+            self.out_proj = QuantizedRowParallelLinear(
+                quantize_bit_width,
+                embed_dim,
+                embed_dim,
+                bias=bias,
+                input_is_parallel=True,
+                init_method=init_method_weights,
+                skip_bias_add=True,
+                use_cpu_initialization=use_cpu_initialization,
+                dtype=dtype,
+            )
+        else:
+            self.out_proj = RowParallelLinear(
+                embed_dim,
+                embed_dim,
+                bias=bias,
+                input_is_parallel=True,
+                init_method=init_method_weights,
+                skip_bias_add=True,
+                use_cpu_initialization=use_cpu_initialization,
+                dtype=dtype,
+            )
 
     def forward(
         self,

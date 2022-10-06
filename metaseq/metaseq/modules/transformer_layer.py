@@ -274,6 +274,8 @@ class TransformerDecoderLayer(nn.Module):
             initialize_params_on_gpu=initialize_params_on_gpu,
             full_megatron_init=getattr(args, "full_megatron_init", False),
             megatron_init_sigma=getattr(args, "megatron_init_sigma", 0.006),
+            quantize=getattr(args, "_quantize", False),
+            quantize_bit_width=getattr(args, "_quantize_bit_width", None),
             dtype=self._get_model_init_dtype(),
         )
 
@@ -283,6 +285,8 @@ class TransformerDecoderLayer(nn.Module):
             initialize_params_on_gpu=initialize_params_on_gpu,
             full_megatron_init=getattr(args, "full_megatron_init", False),
             megatron_init_sigma=getattr(args, "megatron_init_sigma", 0.006),
+            quantize=getattr(args, "_quantize", False),
+            quantize_bit_width=getattr(args, "_quantize_bit_width", None),
             num_layers=args.decoder_layers,
             dtype=self._get_model_init_dtype(),
         )
@@ -300,9 +304,13 @@ class TransformerDecoderLayer(nn.Module):
         self.args = args
 
     def _get_model_init_dtype(self):
+        #if getattr(self.args, "_quantize_bit_width", 0) == 8:
+        #    return torch.int8
+
         if getattr(self.args, "memory_efficient_fp16", False):
             return torch.bfloat16 if getattr(self.args, "bf16", False) else torch.half
-        return torch.float32
+        else:
+            return torch.float32
 
     # Refer to model_parallel's transformer layer for why fc1 and fc2 are separate methods.
     def build_fc1(
