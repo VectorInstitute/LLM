@@ -510,6 +510,8 @@ class GeneratorInterface:
             strict=(self.cfg.checkpoint.checkpoint_shard_count == 1),
             num_shards=self.cfg.checkpoint.checkpoint_shard_count,
             build_model_hook=_build_model,
+            quantize=self.cfg.common.quantize,
+            quantize_bit_width=self.cfg.common.quantize_bit_width,
         )
         # Set dictionaries
         src_dict = task.source_dictionary

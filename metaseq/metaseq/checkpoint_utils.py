@@ -506,6 +506,8 @@ def load_model_ensemble_and_task(
     num_shards=1,
     state=None,
     build_model_hook=None,
+    quantize=False,
+    quantize_bit_width=8,
 ):
     assert state is None or len(filenames) == 1
 
@@ -617,13 +619,12 @@ def load_model_ensemble_and_task(
 
             logger.info("build model from checkpoint cfg")
 
-            quantize = True
+            # Hack to get quantize args into loaded cfg
+            if quantize:
+                cfg.model._quantize = True
+                cfg.model._quantize_bit_width = quantize_bit_width
 
             if build_model_hook is not None:
-                # Hack to get quantize args into loaded cfg
-                if quantize:
-                    cfg.model._quantize = True
-                    cfg.model._quantize_bit_width = 8
                 model = build_model_hook(cfg, task)
             else:
                 # build model for ensemble
@@ -631,7 +632,6 @@ def load_model_ensemble_and_task(
 
             logger.info("load the checkpoint state dict")
             # Optionally quantize model
-            # TODO (mchoi): Move these constants to configs
             if quantize:
                 quant.initialize_quantization_state()
 
@@ -649,7 +649,7 @@ def load_model_ensemble_and_task(
                 quantized_weight_scales = quant.quantize_state_dict(
                     state["model"],
                     module_names_for_quant,
-                    bit_width=8,
+                    bit_width=quantize_bit_width,
                 )
 
                 state["model"] = {**state["model"], **quantized_weight_scales}

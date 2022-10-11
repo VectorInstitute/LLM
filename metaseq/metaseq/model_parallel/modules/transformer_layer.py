@@ -87,7 +87,6 @@ class ModelParallelTransformerDecoderLayer(TransformerDecoderLayer):
             init_method_weights = _weight_init
             init_method_bias = _init_method_bias
 
-        parallel_layer = ColumnParallelLinear if not quantize else QuantizedColumnParallelLinear
         if quantize:
             return QuantizedColumnParallelLinear(
                 quantize_bit_width,

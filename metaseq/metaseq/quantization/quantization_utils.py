@@ -173,12 +173,15 @@ def initialize_quantization_state():
             return out
 
     quantization_fn = partial(
-        quantize_fp16_weight_to_int8, kernel_manager=kernel_manager
-    )
-    extraction_fn = partial(extract_any_weight_to_fp16, kernel_manager=kernel_manager)
+        quantize_fp16_weight_to_int8, kernel_manager=kernel_manager)
+    compression_fn = partial(
+        compress_int8_weight_to_int4, kernel_manager=kernel_manager)
+    extraction_fn = partial(
+        extract_any_weight_to_fp16, kernel_manager=kernel_manager)
 
     # Expose quantization functions as global functions
     _QUANTIZATION_FUNCTIONS["quantization_fn"] = quantization_fn
+    _QUANTIZATION_FUNCTIONS["compression_fn"] = compression_fn
     _QUANTIZATION_FUNCTIONS["extraction_fn"] = extraction_fn
 
 
@@ -265,12 +268,15 @@ class QuantizedColumnParallelLinear(ColumnParallelLinear):
         **kwargs
     ):
         super().__init__(*args, **kwargs)
-        shape = self.weight.shape
-        del self.weight
+        n, m = self.weight.shape
+
+        if bit_width == 4:
+            assert m % 2 == 0
+            m //= 2
 
         self.weight = nn.Parameter(
             torch.empty(
-                shape,
+                (n, m),
                 device=torch.cuda.current_device(),
                 dtype=torch.int8,
             ),
@@ -278,7 +284,7 @@ class QuantizedColumnParallelLinear(ColumnParallelLinear):
         )
         self.weight_scale = nn.Parameter(
             torch.empty(
-                shape[0],
+                n,
                 device=torch.cuda.current_device(),
                 dtype=torch.float16,
             ),
@@ -316,12 +322,15 @@ class QuantizedRowParallelLinear(RowParallelLinear):
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
-        shape = self.weight.shape
-        del self.weight
+        n, m = self.weight.shape
+
+        if bit_width == 4:
+            assert m % 2 == 0
+            m //= 2
 
         self.weight = nn.Parameter(
             torch.empty(
-                shape,
+                (n, m),
                 device=torch.cuda.current_device(),
                 dtype=torch.int8,
             ),
@@ -329,7 +338,7 @@ class QuantizedRowParallelLinear(RowParallelLinear):
         )
         self.weight_scale = nn.Parameter(
             torch.empty(
-                shape[0],
+                n,
                 device=torch.cuda.current_device(),
                 dtype=torch.float16,
             ),

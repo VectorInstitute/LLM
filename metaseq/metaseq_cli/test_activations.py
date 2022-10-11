@@ -24,6 +24,7 @@ def prepare_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--host", type=str, required=True)
     parser.add_argument("--port", type=int, required=True)
+    parser.add_argument("--debug", action="store_true")
     return parser.parse_args()
 
 
@@ -197,7 +198,7 @@ def retrieve_hf_activations(mapping, client, model, prompts, aux):
     return acts
 
 
-def assert_activations_correctness(hf_results, opt_results, act_type="transformer_layer", crash_on_false=True):
+def assert_activations_correctness(hf_results, opt_results, act_type="transformer_layer", crash_on_false=True, debug=False):
     """
     Helper function taking HF and OPT activation collections, and
     makes sure they're allclose within some range
@@ -212,6 +213,9 @@ def assert_activations_correctness(hf_results, opt_results, act_type="transforme
         diff = _get_diff(hf_acts, opt_acts)
 
         allclose = torch.allclose(hf_acts, opt_acts, atol=1e-1, rtol=1e-2)
+
+        if debug:
+            breakpoint()
 
         if allclose:
             return diff, allclose
@@ -317,7 +321,7 @@ def main(args):
         opt_acts = retrieve_opt_activations(opt_map, client, prompts)
         hf_acts = retrieve_hf_activations(hf_map, client, hf_model, prompts, aux=(batch_size,))
 
-        diff[opt_type], allclose_fails = assert_activations_correctness(hf_acts, opt_acts, act_type=opt_type, crash_on_false=False)
+        diff[opt_type], allclose_fails = assert_activations_correctness(hf_acts, opt_acts, act_type=opt_type, crash_on_false=False, debug=args.debug)
         fails.append(allclose_fails)
 
     for mapping_allclose_fails in fails:

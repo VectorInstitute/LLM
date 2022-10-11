@@ -196,7 +196,6 @@ class ModelParallelMultiheadAttention(nn.Module):
 
             if quantize:
                 self.qkv_proj = QuantizedColumnParallelLinear(
-
                     quantize_bit_width,
                     self.kdim,
                     3 * embed_dim,

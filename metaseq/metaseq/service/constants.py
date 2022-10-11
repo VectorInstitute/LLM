@@ -61,8 +61,13 @@ BPE_VOCAB = "/scratch/ssd002/projects/opt_test/gpt2-vocab.json"
 # MEGATRON stuff
 MODEL_FILE = os.path.join(CHECKPOINT_FOLDER, "megatronreshard.pt")
 
+# Quantization stuff
+QUANTIZE_BIT_WIDTH = 8
+
 
 LAUNCH_ARGS = [
+    "--quantize",
+    f"--quantize-bit-width {QUANTIZE_BIT_WIDTH}",
     f"--model-parallel-size {MODEL_PARALLEL}",
     f"--distributed-world-size {TOTAL_WORLD_SIZE}",
     "--task language_modeling",
