@@ -26,12 +26,7 @@ RESOURCE_PACKAGE_NAME = __name__
 _QUANTIZATION_FUNCTIONS = {}
 
 
-def rgetattr(obj, attr):
-    attrs = attr.split(".")
-    return functools.reduce(getattr, [obj] + attrs)
-
-
-class QuantizationKernelManager:
+class _QuantizationKernelManager:
     """Class which initializes kernels, and holds the kernel functions."""
 
     def __init__(
@@ -68,18 +63,22 @@ def initialize_quantization_state():
     containing quantization kernel functions.
     """
     # Make manager to init kernels
-    kernel_manager = QuantizationKernelManager("cuda/quantization")
+    kernel_manager = _QuantizationKernelManager("cuda/quantization")
 
     # Declare quantization/dequantization functions
     def compress_int8_weight_to_int4(
         weight: torch.Tensor,
-        kernel_manager: QuantizationKernelManager = None,
+        kernel_manager: _QuantizationKernelManager = None,
     ):
         with torch.cuda.device(weight.device):
             n, m = weight.size(0), weight.size(1)
             assert m % 2 == 0
             m = m // 2
-            out = torch.empty(n, m, dtype=torch.int8, device="cuda")
+            out = torch.empty(
+                (n, m),
+                dtype=torch.int8,
+                device=torch.cuda.current_device(),
+            )
             stream = torch.cuda.current_stream()
 
             gridDim = (n, 1, 1)
@@ -102,7 +101,7 @@ def initialize_quantization_state():
     def quantize_fp16_weight_to_int8(
         weight: torch.Tensor,
         bit_width: int,
-        kernel_manager: QuantizationKernelManager = None,
+        kernel_manager: _QuantizationKernelManager = None,
     ):
         assert weight.dtype == torch.float16, (
             f"Unsupported dtype to quantize: " f"{weight.dtype}"
@@ -137,7 +136,7 @@ def initialize_quantization_state():
         weight: torch.Tensor,
         scale_list: torch.Tensor,
         bit_width: int,
-        kernel_manager: QuantizationKernelManager = None,
+        kernel_manager: _QuantizationKernelManager = None,
     ):
         if bit_width == 8:
             func = kernel_manager.int8WeightExtractionHalf
@@ -151,7 +150,11 @@ def initialize_quantization_state():
         with torch.cuda.device(weight.device):
             n, m = weight.size(0), weight.size(1)
             # TODO (mchoi): Device should be `torch.cuda.current_device()`
-            out = torch.empty(n, m * (8 // bit_width), dtype=torch.half, device="cuda")
+            out = torch.empty(
+                (n, m * (8 // bit_width)),
+                dtype=torch.half,
+                device=torch.cuda.current_device(),
+            )
             stream = torch.cuda.current_stream()
 
             gridDim = (n, 1, 1)
@@ -233,6 +236,7 @@ class QuantizedLinear(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, grad_output: torch.Tensor):
+        # NOTE: Untested and unused for now
         inp, quantized_weight, quantized_weight_scale = ctx.saved_tensors
 
         try:
@@ -377,8 +381,6 @@ def quantize_state_dict(
     Quantize the model state on single GPU/CPU. This should be called in
     the `load_model_ensemble_and_state` function in `checkpoint_utils.py`.
     """
-    # NOTE: Don't access this function through direct importing, since the
-    #       __init__ partials the quantization_fn out at runtime
     quantized_weight_scales = {}
 
     for module_name in quantize_module_names:
@@ -412,6 +414,7 @@ def quantize_state_dict(
 
 
 def sanity_check_quantized_model(model):
+    # TODO (mchoi): Add more extensive tests as necessary
     for module_name, module in model.named_modules():
         param_type = module_name.split(".")[-1]
         #layer_type = ".".join(module_name.split(".")[:-1])

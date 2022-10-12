@@ -1,4 +1,3 @@
-import argparse
 from collections import defaultdict
 from glob import glob
 import logging
@@ -17,23 +16,6 @@ from metaseq.file_io import load_and_pop_last_optimizer_state
 
 
 logger = logging.getLogger(__name__)
-
-
-def prepare_args():
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--src_path_prefix",
-        type=str,
-        default="/checkpoint/opt_test/original/OPT-125M/megatronreshard",
-    )
-    parser.add_argument(
-        "--tgt_path_prefix",
-        type=str,
-        default="/checkpoint/opt_test/original/TEST_glm_merge/OPT-125M/megatronreshard",
-    )
-    parser.add_argument("--target_mp_size", type=int, default=4)
-    parser.add_argument("--model_type", type=str, default="opt")
-    return parser.parse_args()
 
 
 def _get_model_part_num(filename):
@@ -87,7 +69,7 @@ def reshard_model_parallel(
         save_path = f"{prefix}.pt"
         logger.info(f"Saving to {save_path} ...")
         torch.save(ckpt_resharded, save_path)
-        logger.info(f"Done after {time.time() - start_time} minutes")
+        logger.info(f"Done after {time.time() - start_time} seconds")
         return save_path
 
     saved_paths = []
@@ -98,18 +80,3 @@ def reshard_model_parallel(
             )
         )
     return saved_paths
-
-
-def main(args):
-    # NOTE: This is temporarly running as a script
-    reshard_model_parallel(
-        args.src_path_prefix,
-        args.tgt_path_prefix,
-        args.target_mp_size,
-        args.model_type,
-    )
-
-
-if __name__ == "__main__":
-    args = prepare_args()
-    main(args)

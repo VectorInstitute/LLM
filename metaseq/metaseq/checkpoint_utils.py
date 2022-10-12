@@ -22,8 +22,6 @@ from metaseq.dataclass.utils import overwrite_args_by_name
 from metaseq.distributed import utils as distributed_utils
 from metaseq.file_io import PathManager, torch_load_cpu
 from metaseq.launcher.opt_job_constants import ComputeEnvs
-
-# TODO (mchoi): Testing quantization
 import metaseq.quantization as quant
 from metaseq.quantization import (
     QuantizedColumnParallelLinear,
@@ -619,7 +617,7 @@ def load_model_ensemble_and_task(
 
             logger.info("build model from checkpoint cfg")
 
-            # Hack to get quantize args into loaded cfg
+            # cfg is from loaded checkpoint, add quantization args post-hoc
             if quantize:
                 cfg.model._quantize = True
                 cfg.model._quantize_bit_width = quantize_bit_width
@@ -642,9 +640,10 @@ def load_model_ensemble_and_task(
                             type(m) == QuantizedRowParallelLinear
                         ):
                             yield n + ".weight"
-                            #yield n + ".bias"
 
                 module_names_for_quant = list(_get_parallel_layer_names(model))
+
+                logger.info(f"Quantizing model to int{quantize_bit_width}")
 
                 quantized_weight_scales = quant.quantize_state_dict(
                     state["model"],
@@ -653,6 +652,9 @@ def load_model_ensemble_and_task(
                 )
 
                 state["model"] = {**state["model"], **quantized_weight_scales}
+
+            else:
+                logger.info("Model weights are in full fp16")
 
             model.load_state_dict(state["model"], strict=strict)
 
@@ -663,7 +665,7 @@ def load_model_ensemble_and_task(
             # reset state so it gets loaded for the next model in ensemble
             state = None
 
-        ensemble.append(model)   # same return API
+        ensemble.append(model)
     return ensemble, cfg, task
 
 

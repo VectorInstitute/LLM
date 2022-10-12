@@ -1,23 +1,12 @@
 #!/usr/bin/env python3
 import argparse
-from contextlib import contextmanager
-from functools import partial
-import logging
 
 from accelerate import Accelerator
-from einops import rearrange
 from transformers import OPTForCausalLM
-from transformers.models.opt.modeling_opt import (
-    OPTDecoderLayer,
-    OPTAttention,
-    OPTLearnedPositionalEmbedding,
-)
 import torch
 
 from opt_client import Client
 from hook_utils import get_activation_capture_hook_dict, apply_forward_hook
-
-logger = logging.getLogger(__name__)
 
 
 def prepare_args():
@@ -40,7 +29,7 @@ def get_hf_logits(client, hf_model, prompts):
         logits_hf = hf_model(input_ids)[0]
 
     logits_hf_list = [
-        logits_hf[i, 1 : len(toks), :] for i, toks in enumerate(input_ids_list)
+        logits_hf[i, 1: len(toks), :] for i, toks in enumerate(input_ids_list)
     ]
     return logits_hf_list
 

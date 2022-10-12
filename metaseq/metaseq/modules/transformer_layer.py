@@ -304,13 +304,9 @@ class TransformerDecoderLayer(nn.Module):
         self.args = args
 
     def _get_model_init_dtype(self):
-        #if getattr(self.args, "_quantize_bit_width", 0) == 8:
-        #    return torch.int8
-
         if getattr(self.args, "memory_efficient_fp16", False):
             return torch.bfloat16 if getattr(self.args, "bf16", False) else torch.half
-        else:
-            return torch.float32
+        return torch.float32
 
     # Refer to model_parallel's transformer layer for why fc1 and fc2 are separate methods.
     def build_fc1(

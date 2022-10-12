@@ -491,7 +491,7 @@ class GeneratorInterface:
         # Setup task, e.g., translation
         task = tasks.setup_task(self.cfg.task)
 
-        def _build_model(cfg, task, auxillary=None):
+        def _build_model(cfg, task):
             # gets it to go to fp16
             cfg.model.tensor_parallel_init_model_on_gpu = True
             model = task.build_model(cfg.model).cuda()
