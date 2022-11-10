@@ -15,12 +15,18 @@ from typing import Any, Dict, List, Optional
 
 import torch
 from omegaconf import OmegaConf
+from megatron.mpu.layers import ColumnParallelLinear, RowParallelLinear
 
 from metaseq.dataclass.configs import CheckpointConfig
 from metaseq.dataclass.utils import overwrite_args_by_name
 from metaseq.distributed import utils as distributed_utils
 from metaseq.file_io import PathManager, torch_load_cpu
 from metaseq.launcher.opt_job_constants import ComputeEnvs
+import metaseq.quantization as quant
+from metaseq.quantization import (
+    QuantizedColumnParallelLinear,
+    QuantizedRowParallelLinear,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -498,6 +504,8 @@ def load_model_ensemble_and_task(
     num_shards=1,
     state=None,
     build_model_hook=None,
+    quantize=False,
+    quantize_bit_width=8,
 ):
     assert state is None or len(filenames) == 1
 
@@ -518,11 +526,6 @@ def load_model_ensemble_and_task(
             else:
                 filename = orig_filename[:-3] + f"_part{shard_idx}.pt"
 
-            print("getting filenames")
-            print(num_shards)
-            print(suffix)
-            print(orig_filename)
-            print(filename)
             if PathManager.exists(filename):
                 logger.info(f"found {filename}")
             else:
@@ -613,6 +616,12 @@ def load_model_ensemble_and_task(
                 task.load_state_dict(state["task_state"])
 
             logger.info("build model from checkpoint cfg")
+
+            # cfg is from loaded checkpoint, add quantization args post-hoc
+            if quantize:
+                cfg.model._quantize = True
+                cfg.model._quantize_bit_width = quantize_bit_width
+
             if build_model_hook is not None:
                 model = build_model_hook(cfg, task)
             else:
@@ -620,8 +629,38 @@ def load_model_ensemble_and_task(
                 model = task.build_model(cfg.model)
 
             logger.info("load the checkpoint state dict")
+            # Optionally quantize model
+            if quantize:
+                quant.initialize_quantization_state()
+
+                def _get_parallel_layer_names(model):
+                    for n, m in model.named_modules():
+                        if (
+                            type(m) == QuantizedColumnParallelLinear or
+                            type(m) == QuantizedRowParallelLinear
+                        ):
+                            yield n + ".weight"
+
+                module_names_for_quant = list(_get_parallel_layer_names(model))
+
+                logger.info(f"Quantizing model to int{quantize_bit_width}")
+
+                quantized_weight_scales = quant.quantize_state_dict(
+                    state["model"],
+                    module_names_for_quant,
+                    bit_width=quantize_bit_width,
+                )
+
+                state["model"] = {**state["model"], **quantized_weight_scales}
+
+            else:
+                logger.info("Model weights are in full fp16")
 
             model.load_state_dict(state["model"], strict=strict)
+
+            if quantize:
+                quant.sanity_check_quantized_model(model)
+
             logger.info("Done loading state dict")
             # reset state so it gets loaded for the next model in ensemble
             state = None

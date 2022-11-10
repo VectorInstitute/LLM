@@ -81,3 +81,15 @@ LAUNCH_ARGS = [
     f"--max-tokens {BATCH_SIZE * MAX_SEQ_LEN}",
     "/tmp",  # required "data" argument.
 ]
+
+
+# Quantization stuff
+QUANTIZE = False
+QUANTIZE_BIT_WIDTH = 4
+
+
+if QUANTIZE:
+    LAUNCH_ARGS.extend([
+        "--quantize",
+        f"--quantize-bit-width {QUANTIZE_BIT_WIDTH}",
+    ])

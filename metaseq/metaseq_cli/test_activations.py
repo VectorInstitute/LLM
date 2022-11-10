@@ -1,29 +1,19 @@
 #!/usr/bin/env python3
 import argparse
-from contextlib import contextmanager
-from functools import partial
-import logging
 
 from accelerate import Accelerator
-from einops import rearrange
 from transformers import OPTForCausalLM
-from transformers.models.opt.modeling_opt import (
-    OPTDecoderLayer,
-    OPTAttention,
-    OPTLearnedPositionalEmbedding,
-)
 import torch
 
 from opt_client import Client
 from hook_utils import get_activation_capture_hook_dict, apply_forward_hook
-
-logger = logging.getLogger(__name__)
 
 
 def prepare_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--host", type=str, required=True)
     parser.add_argument("--port", type=int, required=True)
+    parser.add_argument("--debug", action="store_true")
     return parser.parse_args()
 
 
@@ -39,7 +29,7 @@ def get_hf_logits(client, hf_model, prompts):
         logits_hf = hf_model(input_ids)[0]
 
     logits_hf_list = [
-        logits_hf[i, 1 : len(toks), :] for i, toks in enumerate(input_ids_list)
+        logits_hf[i, 1: len(toks), :] for i, toks in enumerate(input_ids_list)
     ]
     return logits_hf_list
 
@@ -76,9 +66,9 @@ def init_opt_hf_mappings(num_layers):
         "transformer_layers": [f"decoder.layers.{i}" for i in range(num_layers - 1)] + ["decoder.layer_norm"],
         "attention_maps": [f"decoder.layers.{i}.self_attn.dropout_module" for i in range(num_layers)],
         "self_attention": [f"decoder.layers.{i}.self_attn" for i in range(num_layers)],
-        "q_proj": [f"decoder.layers.{i}.self_attn.q_proj" for i in range(num_layers)],
-        "k_proj": [f"decoder.layers.{i}.self_attn.k_proj" for i in range(num_layers)],
-        "v_proj": [f"decoder.layers.{i}.self_attn.v_proj" for i in range(num_layers)],
+        #"q_proj": [f"decoder.layers.{i}.self_attn.q_proj" for i in range(num_layers)],
+        #"k_proj": [f"decoder.layers.{i}.self_attn.k_proj" for i in range(num_layers)],
+        #"v_proj": [f"decoder.layers.{i}.self_attn.v_proj" for i in range(num_layers)],
         "self_attention_layer_norm": [f"decoder.layers.{i}.self_attn_layer_norm" for i in range(num_layers)],
         "fc1": [f"decoder.layers.{i}.fc1" for i in range(num_layers)],
         "fc2": [f"decoder.layers.{i}.fc2" for i in range(num_layers)],
@@ -101,9 +91,9 @@ def init_opt_hf_mappings(num_layers):
             get_hf_activations,
             lambda output: output["attentions"]],
         "self_attention": [f"model.decoder.layers.{i}.self_attn" for i in range(num_layers)],
-        "q_proj": [f"model.decoder.layers.{i}.self_attn.q_proj" for i in range(num_layers)],
-        "k_proj": [f"model.decoder.layers.{i}.self_attn.k_proj" for i in range(num_layers)],
-        "v_proj": [f"model.decoder.layers.{i}.self_attn.v_proj" for i in range(num_layers)],
+        #"q_proj": [f"model.decoder.layers.{i}.self_attn.q_proj" for i in range(num_layers)],
+        #"k_proj": [f"model.decoder.layers.{i}.self_attn.k_proj" for i in range(num_layers)],
+        #"v_proj": [f"model.decoder.layers.{i}.self_attn.v_proj" for i in range(num_layers)],
         "self_attention_layer_norm": [f"model.decoder.layers.{i}.self_attn_layer_norm" for i in range(num_layers)],
         "fc1": [f"model.decoder.layers.{i}.fc1" for i in range(num_layers)],
         "fc2": [f"model.decoder.layers.{i}.fc2" for i in range(num_layers)],
@@ -157,7 +147,7 @@ def retrieve_hf_activations(mapping, client, model, prompts, aux):
         )
 
         with apply_forward_hook(model, hook_dict):
-            results = get_hf_logits(client, model, prompts)
+            _ = get_hf_logits(client, model, prompts)
 
         return acts
 
@@ -197,7 +187,7 @@ def retrieve_hf_activations(mapping, client, model, prompts, aux):
     return acts
 
 
-def assert_activations_correctness(hf_results, opt_results, act_type="transformer_layer", crash_on_false=True):
+def assert_activations_correctness(hf_results, opt_results, act_type="transformer_layer", crash_on_false=True, debug=False):
     """
     Helper function taking HF and OPT activation collections, and
     makes sure they're allclose within some range
@@ -212,6 +202,9 @@ def assert_activations_correctness(hf_results, opt_results, act_type="transforme
         diff = _get_diff(hf_acts, opt_acts)
 
         allclose = torch.allclose(hf_acts, opt_acts, atol=1e-1, rtol=1e-2)
+
+        if debug:
+            breakpoint()
 
         if allclose:
             return diff, allclose
@@ -317,7 +310,7 @@ def main(args):
         opt_acts = retrieve_opt_activations(opt_map, client, prompts)
         hf_acts = retrieve_hf_activations(hf_map, client, hf_model, prompts, aux=(batch_size,))
 
-        diff[opt_type], allclose_fails = assert_activations_correctness(hf_acts, opt_acts, act_type=opt_type, crash_on_false=False)
+        diff[opt_type], allclose_fails = assert_activations_correctness(hf_acts, opt_acts, act_type=opt_type, crash_on_false=False, debug=args.debug)
         fails.append(allclose_fails)
 
     for mapping_allclose_fails in fails:
