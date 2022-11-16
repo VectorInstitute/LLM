@@ -240,24 +240,43 @@ def batching_loop(timeout=100, max_tokens=MAX_BATCH_TOKENS):
                         # activations should come in as B x S x D
                         ret_dict = {}
 
-                        for k, v in activation_dict.items():
-                            # attention map
-                            if "self_attn.dropout_module" in k:
-                                val = v[
+                        def handle_activations(name, activations):
+                            """
+                            Perform necessary slicing and encoding of
+                            either single activations (B, S, D) or single
+                            activations with multiple steps of shape (B, 1, D).
+                            """
+                            def slice_dropout(acts):
+                                """Handle dropout activations slicing."""
+                                return acts[
                                     i,
                                     :,
-                                    1 : num_real_tokens + 1,
-                                    1 : num_real_tokens + 1,
+                                    1: num_real_tokens + 1,
+                                    1: num_real_tokens + 1,
                                 ].clone()
-                            else:
-                                # cut off the starting token because metaseq
-                                # adds. It should take out the pad to reduce bandwidth
-                                val = v[i, 1 : num_real_tokens + 1].clone()
 
-                            ret_dict[k] = codecs.encode(
-                                pickle.dumps(val),
-                                "base64",
-                            ).decode("utf-8")
+                            def default_slice_acts(acts):
+                                """Handle slicing for (B, S, D) activations."""
+                                return acts[i, 1: num_real_tokens + 1].clone()
+
+                            def encode_acts(acts):
+                                """Encode acts for transfer via http."""
+                                return codecs.encode(
+                                    pickle.dumps(acts),
+                                    "base64",
+                                ).decode("utf-8")
+
+                            if "self_attn.dropout_module" in name:
+                                slice_fn = slice_dropout
+                            else:
+                                slice_fn = default_slice_acts
+
+                            formatted_acts = encode_acts(slice_fn(activations))
+
+                            return formatted_acts
+
+                        for k, v in activation_dict.items():
+                            ret_dict[k] = handle_activations(k, v)
 
                         gen[0]["activations"] = ret_dict
 

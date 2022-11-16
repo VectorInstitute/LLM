@@ -180,7 +180,21 @@ def opt_forward_hook_fn(registered_name, save_dict, aux, m, _, outputs):
     ):
         output = rearrange(output, "s b d -> b s d")
 
-    save_dict[registered_name] = output.detach().cpu()
+    if registered_name in save_dict.keys():
+        if type_m != ModelParallelTransformerDecoder:
+            raise NotImplementedError("Activation retrieval for "
+                                      "response_length > 0 is only implemented "
+                                      "for output logits. Combining "
+                                      "activations across multiple generation "
+                                      "steps is non-trivial (ie. attention "
+                                      "maps).")
+
+        save_dict[registered_name] = torch.cat(
+            (save_dict[registered_name], output.detach().cpu()),
+            axis=-2,
+        )
+    else:
+        save_dict[registered_name] = output.detach().cpu()
 
 
 def hf_forward_hook_fn(registered_name, save_dict, aux, m, _, outputs):
