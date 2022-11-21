@@ -4,8 +4,10 @@ import itertools
 import pickle
 from dataclasses import dataclass
 from functools import cached_property, partial
-
+from typing import List
 import requests
+
+from torch import Tensor
 
 
 def check_response(resp):
@@ -160,7 +162,7 @@ class Client:
         result = decode_str(activations_list)
         return result
 
-    def forward(self, prompts):
+    def forward(self, prompts: List[str]) -> List[List[Tensor]]:
         """
         Do a single forward pass through network. Since there is no decoding
         done, we still don't care about temperature, top_p, etc.
