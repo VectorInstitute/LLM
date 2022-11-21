@@ -1,16 +1,16 @@
-from functools import partial
 from typing import List, Tuple, Optional, Union, Any, Sequence, Callable
+import math
 
 from accelerate import Accelerator
 from transformers import OPTForCausalLM
 import torch
 from torch import Tensor
+from tqdm import tqdm
 
 from opt_client import Client
 
 
 HuggingfaceTransformersModel = Any
-HuggingfaceTokenizer = Any
 
 
 def assert_activation_structure(act1: Tensor, act2: Tensor) -> None:
@@ -56,7 +56,7 @@ def sample(lprobs: Tensor) -> Tuple[Tensor, Tensor]:
 def allreduce_argmax_decoding_fn(
     model_outputs: Sequence[Tensor],
     **kwargs
-) -> Sequence[Tensor]:
+) -> List[int]:
     """
     Decoding function which reduces along the model dimension, then does a
     softmax argmax to predict the next token.
@@ -73,9 +73,14 @@ def allreduce_argmax_decoding_fn(
         # Average logits
         cum_logprobs = sum(tuple_of_logprobs) / len(tuple_of_logprobs)
 
+        start_token = kwargs["start_token"]
+        pad_token = kwargs["pad_token"]
+        cum_logprobs[start_token] = -math.inf
+        cum_logprobs[pad_token] = -math.inf
+
         _scores, samples = sample(cum_logprobs)
 
-        next_ids.append(samples.unsqueeze(0))
+        next_ids.append(samples.item())
 
     return next_ids
 
@@ -98,117 +103,130 @@ class ClientTokenizer:
         self.pad_token = pad_token
         self.start_token = start_token
 
-    def _get_tokenized_lengths(
+    def tensorize_prompts(self, prompts: List[List[int]]) -> Tensor:
+        return torch.as_tensor(prompts)
+
+    def untensorize_prompts(self, prompts: Tensor) -> List[List[int]]:
+        assert prompts.ndim == 2, "Prompts have a 3rd dimension."
+        return prompts.tolist()
+
+    def get_tokenized_lengths(
         self,
         tokenized_prompts: List[List[int]],
     ) -> List[int]:
         """Return the lengths of each tokenized example."""
         return list(map(len, tokenized_prompts))
 
-    def tokenize(self, prompts: List[str]) -> List[List[int]]:
+    def prepend_start_token(self, prompts: List[List[int]]) -> List[List[int]]:
+        """Prepend start token to each prompt in batch."""
+        return [[self.start_token] + p for p in prompts]
+
+    def remove_start_token(self, prompts: List[List[int]]) -> List[List[int]]:
+        """Remove start token from each prompt in batch."""
+        return [[t for t in p if t != self.start_token] for p in prompts]
+
+    def pad_right(self, prompts: List[List[int]]) -> List[List[int]]:
         """
-        Tokenize a list of string prompts using client-provided
-        tokenizer.
+        Pad right to each prompt in batch, such that the list of lists is
+        now square. The inner dimension is the same size as the longest prompt.
+        """
+        max_len = max(map(len, prompts))
+
+        def pad_fn(x):
+            return x + [self.pad_token] * (max_len - len(x))
+
+        return [pad_fn(p) for p in prompts]
+
+    def remove_pad_right(self, prompts: List[List[int]]) -> List[List[int]]:
+        """Remove the pad tokens from each prompt in batch."""
+        return [[t for t in p if t != self.pad_token] for p in prompts]
+
+    def append_next_ids(
+        self,
+        prompts: List[List[int]],
+        next_ids: List[int]
+    ) -> List[List[int]]:
+        """
+        Given prompts and next tokens, return the prompts with the next
+        tokens append to the end of the prompts.
+
+        Note: Will remove any padding tokens if they exist.
+        """
+        prompts = self.remove_pad_right(prompts)
+        return [p + [id_] for p, id_ in zip(prompts, next_ids)]
+
+    def _tokenize(self, prompts: List[str]) -> List[List[int]]:
+        """
+        Tokenize a list of string prompts using client-provided tokenizer.
         """
         return self.client.tokenize(prompts)
 
-    def prepend_start_token(
+    def _preprocess_prompts(
         self,
-        tokenized_prompts: List[Union[Tensor, List[int]]],
-    ) -> List[Union[Tensor, List[int]]]:
-        """Prepends a start token to each tokenized prompt in a list."""
-        # Return the prompts in the same container as the input
-        if isinstance(tokenized_prompts[0], Tensor):
-            return [
-                torch.cat((torch.LongTensor([self.start_token]), p))
-                for p in tokenized_prompts
-            ]
-        else:
-            return [[self.start_token] + p for p in tokenized_prompts]
-
-    def pad_right(
-        self,
-        tokenized_prompts: Union[List[Tensor], List[List[int]]]
-    ) -> Tensor:
-        """
-        Right-pad a list of tensors, then convert the entire list to one large
-        tensor.
-        """
-        def _tensor_pad_fn(x):
-            return torch.nn.functional.pad(
-                x, pad=(0, max_len - len(x)), value=self.pad_token)
-
-        def _list_pad_fn(x):
-            return x + [self.pad_token] * (max_len - len(x))
-
-        max_len = max(map(len, tokenized_prompts))
-        if isinstance(tokenized_prompts[0], Tensor):
-            pad_fn = _tensor_pad_fn
-            combine_fn = torch.stack
-        else:
-            pad_fn = _list_pad_fn
-            combine_fn = torch.as_tensor
-
-        padded_prompts = [pad_fn(p) for p in tokenized_prompts]
-        return combine_fn(padded_prompts)
-
-    def tokenize_prompts(
-        self,
-        prompts: List[Union[str, List[int]]],
-        output_lengths: bool = True
-    ) -> Tuple[Tensor, Optional[List[int]]]:
+        prompts: List[List[int]],
+        pad_right: bool = True,
+        output_lengths: bool = True,
+    ) -> Tuple[List[List[int]], Optional[List[int]]]:
         """
         Tokenize a list of string prompts using the client-provided tokenizer.
         Do additional pre-processing like prepending a padding token and
         pad right for generation.
-        """
-        # need to prepend 2 for start of sequence when getting the input_ids
-        # Case where prompts are already pre-tokenized
-        if isinstance(prompts[0], list) and isinstance(prompts[0][0], int):
-            input_ids = prompts
-        else:
-            input_ids = self.tokenize(prompts)
 
+        NOTE: Prompts are only ever in List[str] format in the first decoding
+            step.
+        """
         if output_lengths:
-            tokenized_lengths = self._get_tokenized_lengths(input_ids)
+            # Always remove pad token and start tokens
+            prompt_lengths = self.get_tokenized_lengths(prompts)
         else:
-            tokenized_lengths = None
+            prompt_lengths = None
 
-        input_ids_with_start = self.prepend_start_token(input_ids)
-        input_ids_with_pad = self.pad_right(input_ids_with_start)
+        if pad_right:
+            input_ids = self.pad_right(prompts)
 
-        return input_ids_with_pad, tokenized_lengths
+        return input_ids, prompt_lengths
 
-    def prepare_autoregressive_input(
+    def _prepare_ar_input_generic(
         self,
-        list_of_next_tokens: List[Tensor],
-        prompts: List[Union[str, List[int]]],
-        output_tokens_in_list: bool = True,
-    ) -> Union[List[List[int]], List[Tensor]]:
+        prompts: List[List[int]],
+        output_lengths: bool = True
+    ) -> Tuple[List[List[int]], Optional[List[int]]]:
+        input_ids, prompt_lengths = self._preprocess_prompts(
+            prompts=prompts,
+            pad_right=True,
+            output_lengths=output_lengths,
+        )
+        return input_ids, prompt_lengths
+
+    def prepare_ar_input_client(
+        self,
+        prompts: List[List[int]],
+    ) -> List[List[int]]:
         """
-        Tokenize the prompts already used as input to the models and append the
-        newly generated tokens to the corresponding batch examples.
+        Given prompts and next tokens, combine them for input to the next
+        decoding step in a ClientModel.
         """
-        assert len(prompts) == len(list_of_next_tokens)
+        input_ids, _ = self._prepare_ar_input_generic(
+            prompts,
+            output_lengths=False,
+        )
+        return input_ids
 
-        # Case where prompts are already pre-tokenized
-        if isinstance(prompts[0], list) and isinstance(prompts[0][0], int):
-            input_ids = prompts
-        elif isinstance(prompts[0], str):
-            input_ids = self.tokenize(prompts)
-        else:
-            raise ValueError("Prompts are in an incorrect format.")
+    def prepare_ar_input_hf(
+        self,
+        prompts: List[List[int]],
+    ) -> Tuple[Tensor, List[int]]:
+        """
+        Given prompts and next tokens, combine them for input to the next
+        decoding step in a HuggingfaceModel.
+        """
+        input_ids, prompt_lengths = self._prepare_ar_input_generic(
+            prompts,
+            output_lengths=True,
+        )
+        tensor_ids = self.tensorize_prompts(input_ids).cuda()
 
-        autoreg_input = []
-        for tokenized_prompt, next_token in zip(input_ids, list_of_next_tokens):
-            autoreg_input.append(
-                torch.cat((torch.LongTensor(tokenized_prompt), next_token), dim=-1)
-            )
-
-        if output_tokens_in_list:
-            return [p.tolist() for p in autoreg_input]
-
-        return autoreg_input
+        return tensor_ids, prompt_lengths
 
 
 class ForwardModel:
@@ -220,20 +238,23 @@ class ForwardModel:
     def __init__(
         self,
         model_or_client: Union[HuggingfaceTransformersModel, Client, Any],
-        tokenizer: Union[ClientTokenizer, HuggingfaceTokenizer, Any],
+        tokenizer: Union[ClientTokenizer],
     ) -> None:
         self.model_or_client = model_or_client
         self.tokenizer = tokenizer
 
     def generation_logic(
         self,
-        prompts: List[Union[str, List[int]]],
+        prompts: List[List[int]],
     ) -> List[Tensor]:
         raise NotImplementedError(
             "Child class does not implement the generation_logic function."
         )
 
-    def forward(self, prompts: List[Union[str, List[int]]]) -> List[Tensor]:
+    def forward(
+        self,
+        prompts: List[List[int]],
+    ) -> List[Tensor]:
         """
         Pass prompts through the generation logic, which will return a list
         of logits.
@@ -246,7 +267,7 @@ class ClientModel(ForwardModel):
     def __init__(
         self,
         client: Client,
-        tokenizer: Union[ClientTokenizer, HuggingfaceTokenizer, Any],
+        tokenizer: Union[ClientTokenizer],
     ) -> None:
         self.client = client
         self.tokenizer = tokenizer
@@ -256,31 +277,27 @@ class ClientModel(ForwardModel):
         cls,
         client_host: int,
         client_port: int,
-        tokenizer: Union[ClientTokenizer, HuggingfaceTokenizer, Any],
+        tokenizer: Union[ClientTokenizer],
     ):
         client = Client(client_host, client_port)
         return cls(client, tokenizer)
 
+    def prepare_prompts(self, prompts: List[List[int]]):
+        return self.tokenizer.prepare_ar_input_client(prompts=prompts)
+
     def generation_logic(
         self,
-        prompts: List[Union[str, List[int]]]
+        prompts: List[List[int]],
     ) -> List[Tensor]:
-        # If a tokenizer was passed in, then the client does not do
-        # tokenization itself
-        if self.tokenizer is not None:
-            input_ids = self.tokenizer.tokenize(prompts)
-            return self.client.forward(input_ids)
-        else:
-            # `interactive_hosted_updated` can handle List[List[int]]
-            assert hasattr(self.client, "tokenize")
-            return self.client.forward(prompts)
+        prepared_prompts = self.prepare_prompts(prompts)
+        return self.client.forward(prepared_prompts)
 
 
 class HuggingfaceModel(ForwardModel):
     def __init__(
         self,
         hf_model: HuggingfaceTransformersModel,
-        tokenizer: Union[ClientTokenizer, HuggingfaceTokenizer, Any],
+        tokenizer: Union[ClientTokenizer],
     ) -> None:
         self.hf_model = hf_model
         self.tokenizer = tokenizer
@@ -333,31 +350,24 @@ class HuggingfaceModel(ForwardModel):
             ]  # (bsz, max_new_tokens, vocab_size)
         return new_logits_hf
 
-    def prepare_prompts(
-        self, prompts: List[Union[str, List[int]]],
-    ) -> Tuple[Tensor, List[int]]:
-        input_ids, prompt_lengths = self.tokenizer.tokenize_prompts(
-            prompts,
-            output_lengths=True,
-        )
-        input_ids = input_ids.cuda()
-
-        return input_ids, prompt_lengths
+    def prepare_prompts(self, prompts: List[List[int]]):
+        return self.tokenizer.prepare_ar_input_hf(prompts=prompts)
 
     def generation_logic(
-        self, prompts: List[Union[str, List[int]]],
+        self,
+        prompts: List[List[int]],
     ) -> List[Tensor]:
         """
         Given some prompts, tokenize and preprocess them and give them to
         some huggingface model to obtain the logits. These logits include the
         predictions for only the immediate next token.
         """
-        input_ids, prompt_lengths = self.prepare_prompts(prompts)
+        prepared_prompts, prompt_lengths = self.prepare_prompts(prompts)
 
         # Two forward passes since I'm not sure how huggingface decodes. We
         # just brute force what we want through their API (see _generate fn).
-        logits = self._forward(input_ids)
-        new_logits = self._generate(input_ids)
+        logits = self._forward(prepared_prompts)
+        new_logits = self._generate(prepared_prompts)
 
         # Slice out only valid parts of sequence, then cat the newly generated
         # token logits
@@ -367,7 +377,7 @@ class HuggingfaceModel(ForwardModel):
                 torch.vstack(
                     (
                         # Trim out start token
-                        logits[i, 1: p_length + 1, :].cpu(),
+                        logits[i, 1: p_length, :].cpu(),
                         new_logits[i].cpu(),
                     )
                 )
@@ -379,7 +389,7 @@ class ModelEnsemble:
     def __init__(
         self,
         models: Sequence[Union[Client, HuggingfaceModel]],
-        tokenizer: Union[ClientTokenizer, HuggingfaceTokenizer, Any],
+        tokenizer: Union[ClientTokenizer],
         decoding_fn: Callable,
     ) -> None:
         # Tokenizers are already wrapped in the models
@@ -389,49 +399,50 @@ class ModelEnsemble:
 
     def decode_step(
         self,
-        prompts: List[Union[str, List[int]]],
+        prompts: List[List[int]],
         **kwargs
-    ) -> List[Tensor]:
+    ) -> List[List[int]]:
         """
         Do forward step on every single model in the collection, apply the
         aggregation and token decoding function given all of the generated
         model logits, then return the decoded next token prediction.
         """
+        # Each model formats the prompt itself, then forward pass to generate
+        # logits per model
         model_outputs = []
         for model in self.models:
-            model_outputs.append(model.forward(prompts))
+            logits = model.forward(prompts)
+            model_outputs.append(logits)
 
+        # Get next tokens batch
         decoded_token_batched = self.decoding_fn(
             model_outputs,
             **kwargs,
         )
-        return decoded_token_batched
+
+        # Update original prompts and return them
+        updated_prompts = self.tokenizer.append_next_ids(
+            prompts, decoded_token_batched)
+
+        return updated_prompts
 
     def decode(
         self,
-        prompts: List[str],
+        initial_prompts: List[str],
         num_steps: int,
         **kwargs
     ) -> List[List[int]]:
         """
         Decode num_steps times.
         """
-        prepare_next_ids_fn = partial(
-            self.tokenizer.prepare_autoregressive_input,
-            output_tokens_in_list=True,
+        # Do preprocessing that just needs to happen once
+        prompts = self.tokenizer.prepend_start_token(
+            self.tokenizer._tokenize(initial_prompts),
         )
 
-        step_next_ids = self.decode_step(prompts, **kwargs)
-        input_ids = prepare_next_ids_fn(step_next_ids, prompts)
-        # Prompts starts out as List[str], but due to tokenization constraints
-        # we feed in input_ids:List[List[int]] for steps [1:].
-        from tqdm import tqdm
+        for i in tqdm(range(0, num_steps)):
+            prompts = self.decode_step(prompts, **kwargs)
 
-        for i in tqdm(range(1, num_steps)):
-            step_next_ids = self.decode_step(input_ids, **kwargs)
-            input_ids = prepare_next_ids_fn(step_next_ids, input_ids)
-            print(input_ids[0])
-
-        return prepare_next_ids_fn(step_next_ids, input_ids)
-
-
+        return self.tokenizer.remove_pad_right(
+            self.tokenizer.remove_start_token(prompts)
+        )

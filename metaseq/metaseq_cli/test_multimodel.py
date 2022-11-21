@@ -44,6 +44,7 @@ def main(args):
         pad_token=1,
         start_token=2,
     )
+    client_model.tokenizer = master_tokenizer
 
     # Instantiate locally-hosted huggingface model
     hf_model = HuggingfaceModel.build(
@@ -51,11 +52,6 @@ def main(args):
         cache_dir="/checkpoint/opt_test/original/OPT-6.7B",
         tokenizer=master_tokenizer,
     )
-
-    client_logits = client_model.forward(prompts)
-    hf_logits = hf_model.forward(prompts)
-
-    assert_activation_structure(client_logits, hf_logits)
 
     # Put models into an ensemble
     model_ensemble = ModelEnsemble(
@@ -65,7 +61,12 @@ def main(args):
     )
 
     # Do multiple decoding steps on the model ensemble
-    model_ensemble_generation = model_ensemble.decode(prompts, num_steps=10)
+    model_ensemble_generation = model_ensemble.decode(
+        prompts,
+        num_steps=10,
+        start_token=2,
+        pad_token=1,
+    )
 
     # Also do decoding on the regular OPT for comparison
     default_opt_generation = client_model.client.generate(
