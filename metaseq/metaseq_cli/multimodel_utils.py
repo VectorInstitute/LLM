@@ -243,10 +243,23 @@ class ForwardModel:
         self.model_or_client = model_or_client
         self.tokenizer = tokenizer
 
+    def prepare_prompts(self, prompts: List[List[int]]) -> Any:
+        """
+        Given a list of tokenized prompts, format/preprocess them as
+        necessary for input to the `generation_logic` function.
+        """
+        raise NotImplementedError(
+            "Child class does not implement the prepare_prompts function."
+        )
+
     def generation_logic(
         self,
         prompts: List[List[int]],
     ) -> List[Tensor]:
+        """
+        Given a list of tokenized prompts, pre-process them and pass them
+        through the model to generate logits for current and next tokens.
+        """
         raise NotImplementedError(
             "Child class does not implement the generation_logic function."
         )
@@ -282,7 +295,7 @@ class ClientModel(ForwardModel):
         client = Client(client_host, client_port)
         return cls(client, tokenizer)
 
-    def prepare_prompts(self, prompts: List[List[int]]):
+    def prepare_prompts(self, prompts: List[List[int]]) -> List[List[int]]:
         return self.tokenizer.prepare_ar_input_client(prompts=prompts)
 
     def generation_logic(
@@ -329,28 +342,27 @@ class HuggingfaceModel(ForwardModel):
         # retrieval
         return cls(hf_model, tokenizer)
 
-    def _forward(self, input_ids: Tensor) -> Tensor:
-        """Forward pass through huggingface model."""
-        with torch.no_grad():
-            # Second ele in tuple is for caching I think
-            logits_hf = self.hf_model(input_ids)[0]
-        return logits_hf
-
-    def _generate(self, input_ids: Tensor) -> Tensor:
+    def _generate(self, input_ids: Tensor) -> Tuple[Tensor, Tensor]:
         """Brute force the next token logits without sampling from them."""
         with torch.no_grad():
-            new_logits_hf = self.hf_model.generate(
+            # Get the logprobs for the input context
+            logits = self.hf_model(input_ids)[0]
+
+            # Get the lobprobs for the newly generated tokens
+            new_logits = self.hf_model.generate(
                 input_ids,
                 max_new_tokens=1,
                 do_sample=False,
                 output_scores=True,
                 return_dict_in_generate=True,
-            ).scores[
-                0
-            ]  # (bsz, max_new_tokens, vocab_size)
-        return new_logits_hf
+            ).scores[0]  # (bsz, max_new_tokens, vocab_size)
 
-    def prepare_prompts(self, prompts: List[List[int]]):
+        return logits, new_logits
+
+    def prepare_prompts(
+        self,
+        prompts: List[List[int]]
+    ) -> Tuple[Tensor, List[int]]:
         return self.tokenizer.prepare_ar_input_hf(prompts=prompts)
 
     def generation_logic(
@@ -366,8 +378,7 @@ class HuggingfaceModel(ForwardModel):
 
         # Two forward passes since I'm not sure how huggingface decodes. We
         # just brute force what we want through their API (see _generate fn).
-        logits = self._forward(prepared_prompts)
-        new_logits = self._generate(prepared_prompts)
+        logits, new_logits = self._generate(prepared_prompts)
 
         # Slice out only valid parts of sequence, then cat the newly generated
         # token logits
