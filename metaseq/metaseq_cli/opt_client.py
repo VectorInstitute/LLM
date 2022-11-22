@@ -3,9 +3,11 @@ import random
 import itertools
 import pickle
 from dataclasses import dataclass
-from functools import cached_property
-
+from functools import cached_property, partial
+from typing import List
 import requests
+
+from torch import Tensor
 
 
 def check_response(resp):
@@ -28,6 +30,7 @@ class Client:
         self.encode_addr = f"http://{self.host}:{self.port}/encode"
         self.module_name_addr = f"http://{self.host}:{self.port}/module_names"
         self.weight_addr = f"http://{self.host}:{self.port}/weight"
+        self.forward_addr = f"https://{self.host}:{self.port}/forward"
 
     def _generate(
         self,
@@ -146,9 +149,48 @@ class Client:
             desired_module_activations=desired_module_activations,
         )
 
+        # Activations are sent as pickled strings
         activations = [
             {k: decode_str(v) for k, v in c["activations"].items()}
             for c in result["choices"]
         ]
+
+        return activations
+
+    @staticmethod
+    def handle_activations(activations_list):
+        result = decode_str(activations_list)
+        return result
+
+    def forward(self, prompts: List[str]) -> List[List[Tensor]]:
+        """
+        Do a single forward pass through network. Since there is no decoding
+        done, we still don't care about temperature, top_p, etc.
+
+        Note that http requests and single forward passes are not implemented
+        in the backend yet, so we just capture output using the activation
+        retrieval functionality.
+        """
+        # TODO: This does not work with response_length != 0
+        result = self._generate(
+            prompts=prompts,
+            temperature=1.0,
+            response_length=1,
+            top_p=1.0,
+            echo=False,
+            desired_module_activations=["decoder"],
+        )
+
+        def handle_multiple_activations(acts):
+            """
+            Given a dict where the keys are the module names, and the values
+            are a sequence of encoded tensors, decode the tensors and return
+            a dict in the same format.
+            """
+            return self.handle_activations(acts["decoder"])
+
+        activations = []
+        for i, activations_batch in enumerate(result["choices"]):
+            activations.append(handle_multiple_activations(activations_batch["activations"]))
 
         return activations
