@@ -45,7 +45,7 @@ from metaseq.service.constants import (
 from metaseq.service.utils import get_my_ip, encode_fn, build_logger
 from metaseq.service.responses import OAIResponse
 
-from hook_utils import get_activation_capture_hook_dict, apply_forward_hook
+from metaseq.service.hook_utils import get_activation_capture_hook_dict, apply_forward_hook
 
 
 app = Flask(__name__)
@@ -198,6 +198,7 @@ def batching_loop(timeout=100, max_tokens=MAX_BATCH_TOKENS):
                 activation_dict = {}
 
                 try:
+
                     desired_module_activations = request_object.pop(
                         "desired_module_activations", None
                     )
@@ -205,6 +206,8 @@ def batching_loop(timeout=100, max_tokens=MAX_BATCH_TOKENS):
                     act_retrieval_aux = request_object.pop("_aux", None)
 
                     if desired_module_activations:
+                        logger.info("Trying Activations Capture")
+
                         hook_dict, activation_dict = get_activation_capture_hook_dict(
                             generator.models[0],
                             desired_module_activations,
