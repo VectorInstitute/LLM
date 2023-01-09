@@ -21,6 +21,7 @@ UNBATCHED_ARG_DICT = OrderedDict([
     ["echo", False],
     # tuple/list of things
     ["desired_module_activations", tuple()],
+    ["activation_editing_fns", None],
 ])
 
 MAX_SEQ_LEN = 2048
