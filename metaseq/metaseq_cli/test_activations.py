@@ -187,7 +187,13 @@ def retrieve_hf_activations(mapping, client, model, prompts, aux):
     return acts
 
 
-def assert_activations_correctness(hf_results, opt_results, act_type="transformer_layer", crash_on_false=True, debug=False):
+def assert_activations_correctness(
+        hf_results,
+        opt_results,
+        act_type="transformer_layer",
+        crash_on_false=True,
+        debug=False
+):
     """
     Helper function taking HF and OPT activation collections, and
     makes sure they're allclose within some range
@@ -299,18 +305,32 @@ def main(args):
     batch_size = len(prompts)
 
     # Initialize OPT-HF layer mappings
-    opt_mappings, hf_mappings = init_opt_hf_mappings(len(hf_model.model.decoder.layers))
+    opt_mappings, hf_mappings = init_opt_hf_mappings(
+        len(hf_model.model.decoder.layers))
 
     # For each mapping, retrieve + format activations and compare using allclose
     diff = {}
     fails = []
-    for (opt_type, opt_map), (hf_type, hf_map) in zip(opt_mappings.items(), hf_mappings.items()):
+    for (opt_type, opt_map), (hf_type, hf_map) in zip(
+            opt_mappings.items(), hf_mappings.items()):
         assert opt_type == hf_type
 
         opt_acts = retrieve_opt_activations(opt_map, client, prompts)
-        hf_acts = retrieve_hf_activations(hf_map, client, hf_model, prompts, aux=(batch_size,))
+        hf_acts = retrieve_hf_activations(
+            hf_map,
+            client,
+            hf_model,
+            prompts,
+            aux=(batch_size,)
+        )
 
-        diff[opt_type], allclose_fails = assert_activations_correctness(hf_acts, opt_acts, act_type=opt_type, crash_on_false=False, debug=args.debug)
+        diff[opt_type], allclose_fails = assert_activations_correctness(
+            hf_acts,
+            opt_acts,
+            act_type=opt_type,
+            crash_on_false=False,
+            debug=args.debug
+        )
         fails.append(allclose_fails)
 
     for mapping_allclose_fails in fails:

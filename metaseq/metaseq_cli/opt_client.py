@@ -14,6 +14,10 @@ def check_response(resp):
     ), f"error in request with code {resp.status_code} resp {resp.json()}"
 
 
+def encode_obj(obj):
+    return codecs.encode(pickle.dumps(obj), "base64").decode("utf-8")
+
+
 def decode_str(obj_in_str):
     return pickle.loads(codecs.decode(obj_in_str.encode("utf-8"), "base64"))
 
@@ -37,6 +41,7 @@ class Client:
         top_p=0.9,
         echo=False,
         logprobs=0,
+        activation_editing_fns=None,
         desired_module_activations=(),
     ):
         prompt_dict = {
@@ -49,6 +54,7 @@ class Client:
             # https://github.com/facebookresearch/metaseq/blob/689fb79b53a2441bf815ae30e64b9438dac027bd/metaseq/hub_utils.py#L568
             "echo": echo,
             "desired_module_activations": desired_module_activations,
+            "activation_editing_fns": activation_editing_fns,
             "logprobs": logprobs,
         }
 
@@ -144,6 +150,24 @@ class Client:
             top_p=1.0,
             echo=False,
             desired_module_activations=desired_module_activations,
+        )
+
+        activations = [
+            {k: decode_str(v) for k, v in c["activations"].items()}
+            for c in result["choices"]
+        ]
+
+        return activations
+
+    def get_edited_activations(self, prompts, desired_module_activations, activation_editing_fns):
+        result = self._generate(
+            prompts=prompts,
+            temperature=1.0,
+            response_length=0,
+            top_p=1.0,
+            echo=False,
+            desired_module_activations=desired_module_activations,
+            activation_editing_fns=activation_editing_fns,
         )
 
         activations = [

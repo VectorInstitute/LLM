@@ -1,15 +1,17 @@
 from contextlib import contextmanager
 from functools import partial
 import logging
+from typing import Optional
 
 from einops import rearrange
 import torch
+from torch import Tensor
 
+import activation_utils
 from megatron.mpu.mappings import gather_from_tensor_model_parallel_region
 from megatron.mpu import ColumnParallelLinear, RowParallelLinear
 from metaseq.modules.layer_norm import FusedLayerNorm
 from metaseq.modules.dropout import Dropout
-from metaseq.distributed import utils as distributed_utils
 from metaseq.model_parallel.modules.transformer_layer import (
     ModelParallelTransformerDecoderLayer,
 )
@@ -55,7 +57,13 @@ def apply_forward_hook(model, hook_dict):
         all_hooks.clear()
 
 
-def get_activation_capture_hook_dict(model, desired_module_activations, aux=None, model_type="opt"):
+def get_activation_capture_hook_dict(
+    model,
+    desired_module_activations,
+    activation_editing_fns,
+    aux=None,
+    model_type="opt"
+):
     """
     Attach the specified hook forward-pass hook functions onto the given
     model. The model types are one of [opt, hf]
@@ -65,17 +73,87 @@ def get_activation_capture_hook_dict(model, desired_module_activations, aux=None
     desired_module_activations = set(desired_module_activations)
 
     for n, m in model.named_modules():
+        if activation_editing_fns is None:
+            editing_fn = None
+        else:
+            if n in activation_editing_fns:
+                editing_fn = activation_editing_fns[n]
+            else:
+                editing_fn = None
+
         if n in desired_module_activations:
             if model_type == "opt":
-                hook_dict[n] = partial(opt_forward_hook_fn, n, activation_dict, aux)
+                hook_dict[n] = partial(opt_forward_hook_fn, n, activation_dict, aux, editing_fn)
 
             elif model_type == "hf":
-                hook_dict[n] = partial(hf_forward_hook_fn, n, activation_dict, aux)
+                hook_dict[n] = partial(hf_forward_hook_fn, n, activation_dict, aux, editing_fn)
 
     return hook_dict, activation_dict
 
 
-def opt_forward_hook_fn(registered_name, save_dict, aux, m, _, outputs):
+def generic_forward_hook_fn(
+    registered_name,
+    save_dict,
+    aux,
+    editing_fn,
+    self,
+    _inputs,
+    outputs,
+) -> Optional[Tensor]:
+    """
+    Generic forward hook function that can be used for activation retrieval,
+    editing, etc.
+    """
+    activation = activation_utils.ShardedActivation(
+        registered_name=registered_name,
+        module=self,
+        aux=aux,
+        sharded_activations=outputs,
+    )
+
+    # Gather using all ranks
+    activation.gather()
+
+    # Only rank0 needs to do the rest
+    if torch.distributed.get_rank() != 0:
+        return
+
+    # Rearrange to correct shape
+    activation.rearrange()
+
+    # Run the editing function
+    if editing_fn is not None:
+        activation.edit_activation(editing_fn)
+
+    # Bind a copy of output to save dict
+    save_dict[registered_name] = activation.activations.detach().cpu()
+
+    # Undo the rearrange to perfectly reconstruct output (beside editing)
+    activation.undo_rearrange()
+
+    # Scatter the output to each rank
+    activation.scatter()
+
+    return activation.activations
+
+
+def opt_forward_hook_fn(
+    registered_name,
+    save_dict,
+    aux,
+    editing_fn,
+    m,
+    _,
+    outputs,
+):
+    if torch.distributed.get_rank() == 0:
+        if editing_fn is None:
+            logger.info("Editing function is None")
+        else:
+            logger.info(f"Editing module {registered_name}!")
+            # TODO: Debugging
+            logger.info(f"Function is: {editing_fn}")
+
     # NOTE: Don't consider inputs, since there can be arbitrary code between
     #       module calls
     type_m = type(m)
@@ -180,10 +258,11 @@ def opt_forward_hook_fn(registered_name, save_dict, aux, m, _, outputs):
     ):
         output = rearrange(output, "s b d -> b s d")
 
+    # Bind the final activation to the save dict
     save_dict[registered_name] = output.detach().cpu()
 
 
-def hf_forward_hook_fn(registered_name, save_dict, aux, m, _, outputs):
+def hf_forward_hook_fn(registered_name, save_dict, aux, editing_fn, m, _, outputs):
     """
     Forward hook function for HuggingFace OPT model, conditioning on
     (sub)module types. This function should not be used outside of testing.

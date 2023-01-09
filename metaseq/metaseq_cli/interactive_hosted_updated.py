@@ -58,6 +58,23 @@ BATCH_QUEUE = PriorityQueueRingShard()
 logger = build_logger()
 
 
+def decode_str(obj_in_str):
+    return pickle.loads(codecs.decode(obj_in_str.encode("utf-8"), "base64"))
+
+
+def encode_obj(obj):
+    return codecs.encode(pickle.dumps(obj), "base64").decode("utf-8")
+
+
+def validate_fn(obj):
+    fn = pickle.loads(obj)
+    x = torch.ones(10, 10)
+    start_time = time.time()
+    _ = fn(x)
+    end_time = time.time()
+
+
+
 def batching_loop(timeout=100, max_tokens=MAX_BATCH_TOKENS):
     """
     batching_loop is an infinite loop responsible for executing generations.
@@ -198,9 +215,15 @@ def batching_loop(timeout=100, max_tokens=MAX_BATCH_TOKENS):
                 activation_dict = {}
 
                 try:
+                    # Activation retrieval and editing
                     desired_module_activations = request_object.pop(
                         "desired_module_activations", None
                     )
+                    activation_editing_fns = request_object.pop(
+                        "activation_editing_fns", None
+                    )
+
+                    # TODO: Handle the functions here
 
                     act_retrieval_aux = request_object.pop("_aux", None)
 
@@ -208,6 +231,7 @@ def batching_loop(timeout=100, max_tokens=MAX_BATCH_TOKENS):
                         hook_dict, activation_dict = get_activation_capture_hook_dict(
                             generator.models[0],
                             desired_module_activations,
+                            activation_editing_fns,
                             aux=act_retrieval_aux,
                         )
 
@@ -330,12 +354,16 @@ def worker_main(cfg1: MetaseqConfig, namespace_args=None):
                 desired_module_activations = request_object.pop(
                     "desired_module_activations", None
                 )
+                activation_editing_fns = request_object.pop(
+                    "activation_editing_fns", None
+                )
                 act_retrieval_aux = request_object.pop("_aux", None)
 
                 if desired_module_activations:
                     hook_dict, _ = get_activation_capture_hook_dict(
                         generator.models[0],
                         desired_module_activations,
+                        activation_editing_fns,
                         aux=act_retrieval_aux,
                     )
 
