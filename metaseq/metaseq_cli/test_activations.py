@@ -142,6 +142,7 @@ def retrieve_hf_activations(mapping, client, model, prompts, aux):
         hook_dict, acts = get_activation_capture_hook_dict(
             model,
             module_names,
+            activation_editing_fns=None,
             aux=aux,
             model_type="hf",
         )

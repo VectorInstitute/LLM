@@ -5,6 +5,7 @@ import pickle
 from dataclasses import dataclass
 from functools import cached_property
 
+import cloudpickle
 import requests
 
 
@@ -15,7 +16,7 @@ def check_response(resp):
 
 
 def encode_obj(obj):
-    return codecs.encode(pickle.dumps(obj), "base64").decode("utf-8")
+    return codecs.encode(cloudpickle.dumps(obj), "base64").decode("utf-8")
 
 
 def decode_str(obj_in_str):
@@ -160,6 +161,12 @@ class Client:
         return activations
 
     def get_edited_activations(self, prompts, desired_module_activations, activation_editing_fns):
+        assert activation_editing_fns is not None
+
+        encoded_act_editing_fns = {
+            k: encode_obj(v) for k, v in activation_editing_fns.items()
+        }
+
         result = self._generate(
             prompts=prompts,
             temperature=1.0,
@@ -167,7 +174,7 @@ class Client:
             top_p=1.0,
             echo=False,
             desired_module_activations=desired_module_activations,
-            activation_editing_fns=activation_editing_fns,
+            activation_editing_fns=encoded_act_editing_fns,
         )
 
         activations = [

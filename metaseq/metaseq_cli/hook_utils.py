@@ -1,15 +1,19 @@
+import codecs
 from contextlib import contextmanager
 from functools import partial
 import logging
+import pickle
 from typing import Optional
 
+import cloudpickle
 from einops import rearrange
 import torch
 from torch import Tensor
 
 import activation_utils
 from megatron.mpu.mappings import gather_from_tensor_model_parallel_region
-from megatron.mpu import ColumnParallelLinear, RowParallelLinear
+from megatron.mpu.layers import ColumnParallelLinear, RowParallelLinear
+from megatron.mpu.initialize import get_tensor_model_parallel_group
 from metaseq.modules.layer_norm import FusedLayerNorm
 from metaseq.modules.dropout import Dropout
 from metaseq.model_parallel.modules.transformer_layer import (
@@ -32,7 +36,15 @@ from metaseq.quantization import (
 )
 
 
+# TODO: Remove before PR
+from activation_utils import breakpoint_rank0
+
+
 logger = logging.getLogger(__name__)
+
+
+def decode_str(obj_in_str):
+    return cloudpickle.loads(codecs.decode(obj_in_str.encode("utf-8"), "base64"))
 
 
 @contextmanager
@@ -73,17 +85,20 @@ def get_activation_capture_hook_dict(
     desired_module_activations = set(desired_module_activations)
 
     for n, m in model.named_modules():
-        if activation_editing_fns is None:
-            editing_fn = None
-        else:
+        if activation_editing_fns is not None:
             if n in activation_editing_fns:
-                editing_fn = activation_editing_fns[n]
+                encoded_editing_fn = activation_editing_fns[n]
+                editing_fn = decode_str(encoded_editing_fn)
             else:
                 editing_fn = None
+        else:
+            editing_fn = None
 
         if n in desired_module_activations:
             if model_type == "opt":
-                hook_dict[n] = partial(opt_forward_hook_fn, n, activation_dict, aux, editing_fn)
+                #hook_dict[n] = partial(opt_forward_hook_fn, n, activation_dict, aux, editing_fn)
+
+                hook_dict[n] = partial(generic_forward_hook_fn, n, activation_dict, aux, editing_fn)
 
             elif model_type == "hf":
                 hook_dict[n] = partial(hf_forward_hook_fn, n, activation_dict, aux, editing_fn)
@@ -108,33 +123,40 @@ def generic_forward_hook_fn(
         registered_name=registered_name,
         module=self,
         aux=aux,
-        sharded_activations=outputs,
+        layer_outputs=outputs,
     )
 
-    # Gather using all ranks
+    # Gather the full activation using all ranks
     activation.gather()
 
-    # Only rank0 needs to do the rest
-    if torch.distributed.get_rank() != 0:
-        return
+    # Only rank0 handles the full activation
+    if torch.distributed.get_rank() == 0:
+        # Rearrange to correct shape
+        activation.rearrange()
 
-    # Rearrange to correct shape
-    activation.rearrange()
+        # Run the editing function
+        if editing_fn is not None:
+            activation.edit_activation(editing_fn)
 
-    # Run the editing function
+        # Bind a copy of output to save dict
+        save_dict[registered_name] = activation.activations.detach().cpu()
+
+        # Undo the rearrange to perfectly reconstruct original full activation
+        # post-gather
+        activation.undo_rearrange()
+
+    # Shed non-rank0 workers if they aren't neede
+    else:
+        if editing_fn is None:
+            return
+
+    # If the activation was edited we need to return it. Scatter the edited
+    # full activation to all ranks, then return the sharded activation
     if editing_fn is not None:
-        activation.edit_activation(editing_fn)
+        # Scatter the output to each rank
+        activation.scatter()
 
-    # Bind a copy of output to save dict
-    save_dict[registered_name] = activation.activations.detach().cpu()
-
-    # Undo the rearrange to perfectly reconstruct output (beside editing)
-    activation.undo_rearrange()
-
-    # Scatter the output to each rank
-    activation.scatter()
-
-    return activation.activations
+        return activation.layer_outputs
 
 
 def opt_forward_hook_fn(
