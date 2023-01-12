@@ -20,12 +20,12 @@ def sub10(x):
     return x - 10
 
 
-def perturb_1(act):
+def diag_elementwise_scaling(act):
     x = act * ((torch.eye(*act.shape[-2:]).cuda() * 6.9) + 1)
     return x.to(act.dtype)
 
 
-def undo_perturb_1(act):
+def undo_diag_elementwise_scaling(act):
     x = act / ((torch.eye(*act.shape[-2:]) * 6.9) + 1)
     return x.to(act.dtype)
 
@@ -61,7 +61,7 @@ def main(args):
     perturbed_logits = client.get_edited_activations(
         prompts,
         layers,
-        {layers[1]: perturb_1}
+        {layers[1]: diag_elementwise_scaling}
     )
     for original_ex, perturbed_ex in zip(original_logits, perturbed_logits):
         assert torch.allclose(
@@ -70,7 +70,7 @@ def main(args):
         )
         assert torch.allclose(
             original_ex[layers[1]],
-            undo_perturb_1(perturbed_ex[layers[1]]),
+            undo_diag_elementwise_scaling(perturbed_ex[layers[1]]),
             atol=1e-4,
         )
         assert not torch.allclose(
@@ -78,7 +78,6 @@ def main(args):
             perturbed_ex[layers[2]],
             atol=1e-1,
         )
-    breakpoint()
 
 
 if __name__ == "__main__":
