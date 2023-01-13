@@ -8,6 +8,8 @@ from functools import cached_property
 import cloudpickle
 import requests
 
+from activation_utils import ActivationPayload
+
 
 def check_response(resp):
     assert (
@@ -42,8 +44,7 @@ class Client:
         top_p=0.9,
         echo=False,
         logprobs=0,
-        activation_editing_fns=None,
-        desired_module_activations=(),
+        encoded_activation_payload=None,
     ):
         prompt_dict = {
             "prompt": prompts,
@@ -54,8 +55,7 @@ class Client:
             # this arg same as the semantics of
             # https://github.com/facebookresearch/metaseq/blob/689fb79b53a2441bf815ae30e64b9438dac027bd/metaseq/hub_utils.py#L568
             "echo": echo,
-            "desired_module_activations": desired_module_activations,
-            "activation_editing_fns": activation_editing_fns,
+            "encoded_activation_payload": encoded_activation_payload,
             "logprobs": logprobs,
         }
 
@@ -144,13 +144,21 @@ class Client:
         return output
 
     def get_activations(self, prompts, desired_module_activations):
+        activation_payload = ActivationPayload(
+            module_names_activation_retrieval=desired_module_activations,
+            module_names_activation_probing=(),
+            module_editing_fn_pairs={},
+        )
+
+        encoded_activation_payload = encode_obj(activation_payload)
+
         result = self._generate(
             prompts=prompts,
             temperature=1.0,
             response_length=0,
             top_p=1.0,
             echo=False,
-            desired_module_activations=desired_module_activations,
+            encoded_activation_payload=encoded_activation_payload,
         )
 
         activations = [
@@ -160,12 +168,33 @@ class Client:
 
         return activations
 
-    def get_edited_activations(self, prompts, desired_module_activations, activation_editing_fns):
-        assert activation_editing_fns is not None
+    def get_edited_activations(self, prompts, desired_module_activations, desired_module_probing = None, activation_editing_fns = None):
+        assert desired_module_activations is not None
+        if desired_module_probing is None:
+            desired_module_probing = ()
+        if activation_editing_fns is None:
+            activation_editing_fns = {}
 
-        encoded_act_editing_fns = {
-            k: encode_obj(v) for k, v in activation_editing_fns.items()
-        }
+        activation_payload = ActivationPayload(
+            module_names_activation_retrieval=desired_module_activations,
+            module_names_activation_probing=desired_module_probing,
+            module_editing_fn_pairs=activation_editing_fns,
+        )
+
+        # Make sure module names are valid
+        module_names = self.module_names
+        desired_module_activations = set(desired_module_activations)
+        desired_module_probing = set(desired_module_probing)
+
+        assert set.intersection(
+            desired_module_activations,
+            desired_module_probing,
+        ) == set()
+        all_modules = desired_module_activations | desired_module_probing
+        for m in all_modules:
+            assert m in module_names, f"Module: {m} does not exist in model"
+
+        encoded_activation_payload = encode_obj(activation_payload)
 
         result = self._generate(
             prompts=prompts,
@@ -173,8 +202,7 @@ class Client:
             response_length=0,
             top_p=1.0,
             echo=False,
-            desired_module_activations=desired_module_activations,
-            activation_editing_fns=encoded_act_editing_fns,
+            encoded_activation_payload=encoded_activation_payload,
         )
 
         activations = [

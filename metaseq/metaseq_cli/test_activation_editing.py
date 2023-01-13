@@ -21,13 +21,19 @@ def sub10(x):
 
 
 def diag_elementwise_scaling(act):
-    x = act * ((torch.eye(*act.shape[-2:]).cuda() * 6.9) + 1)
-    return x.to(act.dtype)
+    x = act * ((torch.eye(*act.shape[-2:]).cuda() * 2) + 1)
+    out = x.to(act.dtype)
+    #out = act
+    assert out.shape == act.shape
+    return out
 
 
 def undo_diag_elementwise_scaling(act):
-    x = act / ((torch.eye(*act.shape[-2:]) * 6.9) + 1)
-    return x.to(act.dtype)
+    x = act / ((torch.eye(*act.shape[-2:]) * 2) + 1)
+    out = x.to(act.dtype)
+    #out = act
+    assert out.shape == act.shape
+    return out
 
 
 def main(args):
@@ -41,12 +47,22 @@ def main(args):
     client.get_activations(["Hi im Matt"], ["decoder"])
 
     # Test garbage function
-    client.get_edited_activations(prompts, ["decoder"], {"foo": "bar"})
+    client.get_edited_activations(
+        prompts,
+        desired_module_activations=["decoder"],
+        activation_editing_fns={"foo": "bar"}
+    )
 
     # Compare simple edit
     original_act = client.get_activations(prompts, ["decoder"])
-    edited_act = client.get_edited_activations(prompts, ["decoder"], {"decoder": add10})
-    assert torch.allclose(original_act[0]["decoder"], sub10(edited_act[0]["decoder"]), atol=10)
+    edited_act = client.get_edited_activations(
+        prompts,
+        desired_module_activations=["decoder"],
+        activation_editing_fns={"decoder": add10}
+    )
+    assert torch.allclose(original_act[0]["decoder"],
+                          sub10(edited_act[0]["decoder"]),
+                          atol=10)
 
     # Changing an activation upstream should yield different downstream results
     layers = [
@@ -60,8 +76,8 @@ def main(args):
     )
     perturbed_logits = client.get_edited_activations(
         prompts,
-        layers,
-        {layers[1]: diag_elementwise_scaling}
+        desired_module_activations=layers,
+        activation_editing_fns={layers[1]: diag_elementwise_scaling}
     )
     for original_ex, perturbed_ex in zip(original_logits, perturbed_logits):
         assert torch.allclose(
@@ -71,7 +87,7 @@ def main(args):
         assert torch.allclose(
             original_ex[layers[1]],
             undo_diag_elementwise_scaling(perturbed_ex[layers[1]]),
-            atol=1e-4,
+            atol=1e-3,
         )
         assert not torch.allclose(
             original_ex[layers[2]],

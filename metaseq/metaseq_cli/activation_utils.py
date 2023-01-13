@@ -1,4 +1,5 @@
-from typing import Tuple, List, Union, Any
+from dataclasses import dataclass
+from typing import Tuple, List, Union, Any, Optional
 
 from einops import rearrange
 import torch
@@ -49,6 +50,27 @@ def breakpoint_rank0():
         breakpoint()
 
 
+@dataclass
+class ActivationPayload:
+    def __init__(
+        self,
+        module_names_activation_retrieval: tuple,
+        module_names_activation_probing: Optional[tuple] = None,
+        module_editing_fn_pairs: Optional[dict] = None,
+    ) -> None:
+        self.module_names_activation_retrieval = module_names_activation_retrieval
+
+        if module_names_activation_probing is not None:
+            self.module_names_activation_probing = module_names_activation_probing
+        else:
+            self.module_names_activation_probing = ()
+
+        if module_editing_fn_pairs is not None:
+            self.module_editing_fn_pairs = module_editing_fn_pairs
+        else:
+            self.module_editing_fn_pairs = {}
+
+
 class GatherFunctions:
     @staticmethod
     def unity_gather(
@@ -73,7 +95,7 @@ class GatherFunctions:
         if not module.gather_output:
             output = (
                 gather_from_tensor_model_parallel_region(layer_output[0]),
-                layer_output[1:]
+                *layer_output[1:],
             )
         return output
 
@@ -135,7 +157,7 @@ class ScatterFunctions:
         if not module.gather_output:
             output = (
                 scatter_to_tensor_model_parallel_region(layer_output[0]),
-                layer_output[1:]
+                *layer_output[1:],
             )
         return output
 
@@ -223,8 +245,7 @@ class RearrangeFunctions:
         downstream to prepare for the hook return.
         """
         layer_type = registered_name.split(".")[-1]
-        activation = layer_output[0]
-        bias = layer_output[1]
+        activation, bias = layer_output
 
         def fwd_fn(fwd_activation: _Activation) -> _Activation:
             # Manually add bias if needed
@@ -260,7 +281,7 @@ class RearrangeFunctions:
             if module.skip_bias_add:
                 bwd_output = bwd_output - bias
 
-            return bwd_output
+            return (bwd_output, bias)
 
         return fwd_fn(activation), bwd_fn
 
@@ -272,8 +293,7 @@ class RearrangeFunctions:
         aux: tuple[Any],
     ) -> _Activation:
         layer_type = registered_name.split(".")[-1]
-        activation = layer_output[0]
-        bias = layer_output[1]
+        activation, bias = layer_output
 
         def fwd_fn(fwd_activation: _Activation) -> _Activation:
             # Manually add bias if needed
@@ -303,7 +323,7 @@ class RearrangeFunctions:
             if module.skip_bias_add:
                 bwd_output = bwd_output - bias
 
-            return bwd_output
+            return (bwd_output, bias)
 
         return fwd_fn(activation), bwd_fn
 
@@ -388,7 +408,7 @@ class RearrangeFunctions:
             bwd_output = rearrange(bwd_activation, "b s d -> s b d")
 
             if bias is not None:
-                bwd_output = bwd_activation - bias
+                bwd_output = bwd_output - bias
 
             return ((bwd_output, bias), attn_weights)
 
@@ -608,7 +628,9 @@ class ShardedActivation:
         registered_name: str,
         module: nn.Module,
         aux: tuple[Any],
+        module_list: dict[str, type[nn.Module]],
         layer_outputs: _LayerOutput,
+        is_input_activation: bool = False,
     ) -> None:
         # TODO: Support self.activations = Tuple[activations]
         #       - Hence the edit_fn should become edit_fns = Tuple[fns] of the
@@ -628,16 +650,35 @@ class ShardedActivation:
         self.module = module
         self.module_type = type(module)
         self.aux = aux
+        self.module_list = module_list
         self.layer_outputs = layer_outputs
         self.activations = None
 
+        self.is_input_activation = is_input_activation
         self.is_gathered = False
         self.is_rearranged = False
 
-        self.gather_fn = LAYER_RULES.get_gather_rule(self.module_type)
-        self.scatter_fn = LAYER_RULES.get_scatter_rule(self.module_type)
-        self.rearrange_fn = LAYER_RULES.get_rearrange_rule(self.module_type)
-        self.undo_rearrange_fn = None
+        if not self.is_input_activation:
+            self.gather_fn = LAYER_RULES.get_gather_rule(self.module_type)
+            self.scatter_fn = LAYER_RULES.get_scatter_rule(self.module_type)
+            self.rearrange_fn = LAYER_RULES.get_rearrange_rule(
+                self.module_type)
+            self.undo_rearrange_fn = None
+        else:
+            layer_ordering = list(self.module_list)
+            current_layer_idx = layer_ordering.index(self.registered_name)
+            prev_layer_idx = current_layer_idx - 1
+            self.prev_layer_name = layer_ordering[prev_layer_idx]
+            # Swap the prev and current modules so rules work
+            self.original_module = self.module
+            self.module = self.module_list[self.prev_layer_name]
+            self.prev_layer_module_type = type(self.module)
+
+            # For probing input activations, we don't need to return anything
+            self.gather_fn = LAYER_RULES.get_gather_rule(
+                self.prev_layer_module_type)
+            self.rearrange_fn = LAYER_RULES.get_rearrange_rule(
+                self.prev_layer_module_type)
 
     def gather(self):
         """
@@ -708,13 +749,11 @@ class ShardedActivation:
         assert self.is_gathered
         assert self.is_rearranged
 
-        if self.undo_rearrange_fn is not None:
-            undo_rearrange_fn = self.undo_rearrange_fn
-        else:
+        if self.undo_rearrange_fn is None:
             raise Exception(f"Module: {self.registered_name} should never "
                             f"have None rearrange fn")
 
-        self.layer_outputs = undo_rearrange_fn(self.activations)
+        self.layer_outputs = self.undo_rearrange_fn(self.activations)
         self.is_rearranged = False
 
     def scatter(self):

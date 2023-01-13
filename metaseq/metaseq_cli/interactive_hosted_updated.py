@@ -66,15 +66,6 @@ def encode_obj(obj):
     return codecs.encode(pickle.dumps(obj), "base64").decode("utf-8")
 
 
-def validate_fn(obj):
-    fn = pickle.loads(obj)
-    x = torch.ones(10, 10)
-    start_time = time.time()
-    _ = fn(x)
-    end_time = time.time()
-
-
-
 def batching_loop(timeout=100, max_tokens=MAX_BATCH_TOKENS):
     """
     batching_loop is an infinite loop responsible for executing generations.
@@ -216,20 +207,16 @@ def batching_loop(timeout=100, max_tokens=MAX_BATCH_TOKENS):
 
                 try:
                     # Activation retrieval and editing
-                    desired_module_activations = request_object.pop(
-                        "desired_module_activations", None
-                    )
-                    encoded_act_editing_fns = request_object.pop(
-                        "activation_editing_fns", None
+                    encoded_activation_payload = request_object.pop(
+                        "encoded_activation_payload", None
                     )
 
                     act_retrieval_aux = request_object.pop("_aux", None)
 
-                    if desired_module_activations:
+                    if encoded_activation_payload is not None:
                         hook_dict, activation_dict = get_activation_capture_hook_dict(
                             generator.models[0],
-                            desired_module_activations,
-                            encoded_act_editing_fns,
+                            encoded_activation_payload,
                             aux=act_retrieval_aux,
                         )
 
@@ -349,19 +336,15 @@ def worker_main(cfg1: MetaseqConfig, namespace_args=None):
                     None, src_rank=0, group=distributed_utils.get_global_group()
                 )
 
-                desired_module_activations = request_object.pop(
-                    "desired_module_activations", None
-                )
-                encoded_act_editing_fns = request_object.pop(
-                    "activation_editing_fns", None
+                encoded_activation_payload = request_object.pop(
+                    "encoded_activation_payload", None
                 )
                 act_retrieval_aux = request_object.pop("_aux", None)
 
-                if desired_module_activations:
+                if encoded_activation_payload is not None:
                     hook_dict, _ = get_activation_capture_hook_dict(
                         generator.models[0],
-                        desired_module_activations,
-                        encoded_act_editing_fns,
+                        encoded_activation_payload,
                         aux=act_retrieval_aux,
                     )
 

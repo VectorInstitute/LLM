@@ -7,6 +7,8 @@ import torch
 
 from opt_client import Client
 from hook_utils import get_activation_capture_hook_dict, apply_forward_hook
+from activation_utils import ActivationPayload
+from test_activation_editing import diag_elementwise_scaling
 
 
 def prepare_args():
@@ -114,7 +116,11 @@ def retrieve_opt_activations(mapping, client, prompts):
     else:
         module_names = mapping
 
-    acts = client.get_activations(prompts, module_names)
+    acts = client.get_edited_activations(
+        prompts,
+        desired_module_activations=module_names,
+        activation_editing_fns={module_names[0]: diag_elementwise_scaling}
+    )
 
     def _format_results(activations_batched):
         result = {n: [] for n in module_names}
@@ -139,10 +145,13 @@ def retrieve_hf_activations(mapping, client, model, prompts, aux):
     """
     # Helper functions for hooked activations
     def _retrieve_hooked_acts(client, model, prompts, module_names):
+        activation_payload = ActivationPayload(
+            module_names_activation_retrieval=module_names,
+            module_editing_fn_pairs={module_names[0]: diag_elementwise_scaling},
+        )
         hook_dict, acts = get_activation_capture_hook_dict(
             model,
-            module_names,
-            activation_editing_fns=None,
+            activation_payload,
             aux=aux,
             model_type="hf",
         )
@@ -272,6 +281,7 @@ def assert_activations_correctness(
 
             if not allclose:
                 allclose_fails.append(f"{act_type} | layer {layer_idx} | batch {batch_idx}")
+                print(f"{act_type} | layer {layer_idx} | batch {batch_idx}: {diff}")
 
             total_diff += diff
 
@@ -336,7 +346,8 @@ def main(args):
 
     for mapping_allclose_fails in fails:
         if mapping_allclose_fails:
-            print(mapping_allclose_fails)
+            pass
+            #print(mapping_allclose_fails)
 
 
 if __name__ == "__main__":

@@ -36,10 +36,6 @@ from metaseq.quantization import (
 )
 
 
-# TODO: Remove before PR
-from activation_utils import breakpoint_rank0
-
-
 logger = logging.getLogger(__name__)
 
 
@@ -71,8 +67,7 @@ def apply_forward_hook(model, hook_dict):
 
 def get_activation_capture_hook_dict(
     model,
-    desired_module_activations,
-    activation_editing_fns,
+    encoded_activation_payload: activation_utils.ActivationPayload,
     aux=None,
     model_type="opt"
 ):
@@ -82,28 +77,96 @@ def get_activation_capture_hook_dict(
     """
     activation_dict, hook_dict = {}, {}
 
-    desired_module_activations = set(desired_module_activations)
+    if isinstance(encoded_activation_payload, activation_utils.ActivationPayload):
+        activation_payload = encoded_activation_payload
+    else:
+        activation_payload = decode_str(encoded_activation_payload)
+
+    module_names_activation_retrieval = set(
+        activation_payload.module_names_activation_retrieval
+    )
+    module_names_activation_probing = set(
+        activation_payload.module_names_activation_probing
+    )
+    module_editing_fn_pairs = activation_payload.module_editing_fn_pairs
+
+    module_list = {
+        n: m
+        for n, m in model.named_modules()
+        if n != ""
+    }
+
+    # Prevent multiple hooks in a module
+    assert set.intersection(
+        module_names_activation_retrieval,
+        module_names_activation_probing,
+    ) == set()
 
     for n, m in model.named_modules():
-        if activation_editing_fns is not None:
-            if n in activation_editing_fns:
-                encoded_editing_fn = activation_editing_fns[n]
-                editing_fn = decode_str(encoded_editing_fn)
-            else:
-                editing_fn = None
-        else:
-            editing_fn = None
+        editing_fn = module_editing_fn_pairs.get(n, None)
 
-        if n in desired_module_activations:
+        if n in module_names_activation_probing:
+            hook_dict[n] = partial(
+                forward_hook_probe_fn,
+                n,
+                activation_dict,
+                aux,
+                module_list,
+            )
+
+        elif n in module_names_activation_retrieval:
             if model_type == "opt":
-                #hook_dict[n] = partial(opt_forward_hook_fn, n, activation_dict, aux, editing_fn)
-
-                hook_dict[n] = partial(generic_forward_hook_fn, n, activation_dict, aux, editing_fn)
+                hook_dict[n] = partial(
+                    generic_forward_hook_fn,
+                    n,
+                    activation_dict,
+                    aux,
+                    editing_fn,
+                    module_list,
+                )
 
             elif model_type == "hf":
-                hook_dict[n] = partial(hf_forward_hook_fn, n, activation_dict, aux, editing_fn)
+                hook_dict[n] = partial(
+                    hf_forward_hook_fn,
+                    n,
+                    activation_dict,
+                    aux,
+                    editing_fn,
+                )
 
     return hook_dict, activation_dict
+
+
+def forward_hook_probe_fn(
+    registered_name,
+    save_dict,
+    aux,
+    module_list,
+    self,
+    inputs,
+    _outputs,
+) -> None:
+    """Forward hook function to save inputs and outputs for debugging."""
+    raise NotImplementedError
+    inputs = inputs[0]
+
+    input_activation = activation_utils.ShardedActivation(
+        registered_name=registered_name,
+        module=self,
+        aux=aux,
+        module_list=module_list,
+        layer_outputs=inputs,
+        is_input_activation=True,
+    )
+
+    input_activation.gather()
+
+    if torch.distributed.get_rank() != 0:
+        return
+
+    input_activation.rearrange()
+
+    save_dict[registered_name] = input_activation.activations.detach().cpu()
 
 
 def generic_forward_hook_fn(
@@ -111,6 +174,7 @@ def generic_forward_hook_fn(
     save_dict,
     aux,
     editing_fn,
+    module_list,
     self,
     _inputs,
     outputs,
@@ -123,7 +187,9 @@ def generic_forward_hook_fn(
         registered_name=registered_name,
         module=self,
         aux=aux,
+        module_list=module_list,
         layer_outputs=outputs,
+        is_input_activation=False,
     )
 
     # Gather the full activation using all ranks
@@ -312,5 +378,8 @@ def hf_forward_hook_fn(registered_name, save_dict, aux, editing_fn, m, _, output
 
         else:
             output = rearrange(outputs, "(b s) h -> b s h", b=aux[0])
+
+    if editing_fn is not None:
+        output = editing_fn(output)
 
     save_dict[registered_name] = output.detach().cpu()
