@@ -22,13 +22,13 @@ RUN pip3 install torch==1.10.1+cu113 torchvision==0.11.2+cu113 torchaudio==0.10.
 # Install APEX
 RUN git clone https://github.com/NVIDIA/apex.git
 WORKDIR /build/apex
-
 RUN git checkout e2083df5eb96643c61613b9df48dd4eea6b07690
 RUN pip3 install -v --no-cache-dir --global-option="--cpp_ext" --global-option="--cuda_ext" --global-option="--deprecated_fused_adam" --global-option="--xentropy" --global-option="--fast_multihead_attn" ./
 
+ARG CUDA_VISIBLE_DEVICES=none
+ARG TORCH_CUDA_ARCH_LIST="3.5;5.0;6.0;6.1;7.0;7.5;8.0;8.6+PTX"
 # Install Megatron-LM branch
 WORKDIR /build
-
 RUN git clone --branch fairseq_v2 https://github.com/ngoyal2707/Megatron-LM.git
 WORKDIR /build/Megatron-LM
 RUN pip3 install six regex
@@ -37,13 +37,20 @@ RUN pip3 install -e .
 # Install Fairscale
 WORKDIR /build
 
-RUN git clone --branch prefetch_fsdp_params_simple https://github.com/facebookresearch/fairscale.git
+#RUN git clone --branch prefetch_fsdp_params_simple https://github.com/facebookresearch/fairscale.git
+#WORKDIR /build/fairscale
+#RUN pip3 install -e .
+
+RUN git clone https://github.com/facebookresearch/fairscale.git
 WORKDIR /build/fairscale
-RUN pip3 install -e .
+RUN git checkout 1bc96fa8c69def6d990e42bfbd75f86146ce29bd
+RUN pip3 install .
 
 # Install metaseq
 WORKDIR /build
-RUN git clone https://github.com/facebookresearch/metaseq.git
-WORKDIR /build/metaseq
+RUN git clone --branch bugfix/build-fixes-125 https://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@github.com/VectorInstitute/LLM.git
+WORKDIR /build/LLM/metaseq
 RUN pip3 install -e .
 RUN python3 setup.py install
+
+RUN pip install transformers
