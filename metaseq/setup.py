@@ -155,7 +155,7 @@ def do_setup(package_data):
             "more_itertools",
             "mypy",
             "ninja",
-            'numpy; python_version>="3.7"',
+            'numpy==1.23; python_version>="3.7"',
             "omegaconf<=2.1.1",
             "pre-commit",
             "pytest",
