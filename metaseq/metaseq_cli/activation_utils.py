@@ -15,6 +15,13 @@ from megatron.mpu.mappings import (
     gather_from_tensor_model_parallel_region,
     scatter_to_tensor_model_parallel_region,
 )
+from megatron.mpu.utils import (
+    split_tensor_along_last_dim,
+)
+from megatron.mpu.initialize import (
+    get_tensor_model_parallel_world_size,
+    get_tensor_model_parallel_group,
+)
 from metaseq.modules.layer_norm import FusedLayerNorm
 from metaseq.modules.dropout import Dropout
 from metaseq.modules.learned_positional_embedding import (
@@ -48,6 +55,17 @@ _Activation = Union[Tensor, tuple[Tensor]]
 def breakpoint_rank0():
     if torch.distributed.get_rank() == 0:
         breakpoint()
+
+
+def scatter_from_rank0_to_tensor_model_parallel_region(tensor):
+    # This will NOT work for multi-node unless model parallel group == global group
+    # Need to broadcast first, since `scatter_to_tensor_model_parallel_region`
+    # assumes that every rank has the same tensor, which is not the case for
+    # activation editing.
+    torch.distributed.broadcast(tensor, src=0, group=get_tensor_model_parallel_group())
+
+    output = scatter_to_tensor_model_parallel_region(tensor)
+    return output
 
 
 @dataclass
@@ -156,7 +174,7 @@ class ScatterFunctions:
     ) -> _LayerOutput:
         if not module.gather_output:
             output = (
-                scatter_to_tensor_model_parallel_region(layer_output[0]),
+                scatter_from_rank0_to_tensor_model_parallel_region(layer_output[0]),
                 *layer_output[1:],
             )
         return output
@@ -169,7 +187,7 @@ class ScatterFunctions:
         aux: tuple[Any],
     ) -> _LayerOutput:
         if "self_attn" in registered_name:
-            output = scatter_to_tensor_model_parallel_region(layer_output)
+            output = scatter_from_rank0_to_tensor_model_parallel_region(layer_output)
             output = rearrange(output, "s1 s2 b k -> (b k) s1 s2")
         else:
             output = layer_output
@@ -183,7 +201,7 @@ class ScatterFunctions:
         layer_output: _LayerOutput,
         aux: tuple[Any],
     ) -> _LayerOutput:
-        output = scatter_to_tensor_model_parallel_region(layer_output)
+        output = scatter_from_rank0_to_tensor_model_parallel_region(layer_output)
         return output
 
 
@@ -317,11 +335,11 @@ class RearrangeFunctions:
                 bwd_output = rearrange(bwd_activation, "b s d -> s b d")
             elif "fc" in layer_type:
                 bwd_output = rearrange(bwd_activation, "b s d -> (s b) d")
-            else:
-                bwd_output = bwd_activation
 
+            # NOTE: Usually no bias
             if module.skip_bias_add:
                 bwd_output = bwd_output - bias
+
 
             return (bwd_output, bias)
 

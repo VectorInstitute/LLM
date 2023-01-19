@@ -20,12 +20,31 @@ def sub10(x):
     return x - 10
 
 
+def do_nothing(act):
+    return act
+
+
 def diag_elementwise_scaling(act):
     x = act * ((torch.eye(*act.shape[-2:]).cuda() * 2) + 1)
     out = x.to(act.dtype)
     #out = act
     assert out.shape == act.shape
     return out
+
+
+def replace_with_noise(act):
+    out = torch.randn(size=act.shape, dtype=act.dtype).cuda()
+    return out
+
+
+def replace_with_ones(act):
+    out = torch.ones_like(act, dtype=act.dtype).cuda()
+    return out
+
+
+def replace_with_stripe(act):
+    stripe = torch.linspace(-50, 50, act.shape[-1]).broadcast_to(act.shape).to(act.dtype).cuda()
+    return stripe
 
 
 def undo_diag_elementwise_scaling(act):

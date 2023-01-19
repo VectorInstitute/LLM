@@ -12,6 +12,7 @@ from torch import Tensor
 
 import activation_utils
 from megatron.mpu.mappings import gather_from_tensor_model_parallel_region
+from megatron.mpu.utils import split_tensor_along_last_dim
 from megatron.mpu.layers import ColumnParallelLinear, RowParallelLinear
 from megatron.mpu.initialize import get_tensor_model_parallel_group
 from metaseq.modules.layer_norm import FusedLayerNorm
@@ -26,6 +27,7 @@ from metaseq.model_parallel.models.transformer import (
     ModelParallelTransformerDecoder,
 )
 from transformers.models.opt.modeling_opt import (
+    OPTDecoder,
     OPTDecoderLayer,
     OPTAttention,
     OPTLearnedPositionalEmbedding,
@@ -192,6 +194,15 @@ def generic_forward_hook_fn(
         is_input_activation=False,
     )
 
+    """
+    if registered_name == "decoder.layers.28.fc1":
+        print(f"fc1| rank{torch.distributed.get_rank()} input: {_inputs}")
+        print(f"fc1| rank{torch.distributed.get_rank()} output: {outputs}")
+
+    if registered_name == "decoder.layers.28.fc2":
+        print(f"fc2| rank{torch.distributed.get_rank()} input: {_inputs}")
+        print(f"fc2| rank{torch.distributed.get_rank()} output: {outputs}")
+    """
     # Gather the full activation using all ranks
     activation.gather()
 
@@ -221,6 +232,12 @@ def generic_forward_hook_fn(
     if editing_fn is not None:
         # Scatter the output to each rank
         activation.scatter()
+        #if registered_name == "decoder.layers.28.fc1":
+        #    breakpoint()
+
+        if registered_name == "decoder.layers.28.fc1":
+            print(f"fc1| rank{torch.distributed.get_rank()} output: {activation.layer_outputs}")
+            print(f"fc1| rank{torch.distributed.get_rank()} output: {activation.layer_outputs[0].shape}")
 
         return activation.layer_outputs
 
@@ -350,19 +367,31 @@ def opt_forward_hook_fn(
     save_dict[registered_name] = output.detach().cpu()
 
 
-def hf_forward_hook_fn(registered_name, save_dict, aux, editing_fn, m, _, outputs):
+def hf_forward_hook_fn(
+    registered_name,
+    save_dict,
+    aux,
+    editing_fn,
+    m,
+    _,
+    outputs
+):
     """
     Forward hook function for HuggingFace OPT model, conditioning on
     (sub)module types. This function should not be used outside of testing.
     """
+    # TODO: Bring this under the generic hook
     type_m = type(m)
-    layer_type = registered_name.split(".")[-1] # In the case of duplicate types
+
+    # In the case of duplicate types
+    layer_type = registered_name.split(".")[-1]
 
     if type_m == torch.nn.Embedding or type_m == OPTLearnedPositionalEmbedding:
         output = outputs
 
     elif type_m == OPTAttention:
-        output = outputs[0] # (attn_out, attn_weights_reshaped, past_key_values)
+        # (attn_out, attn_weights_reshaped, past_key_values)
+        output = outputs[0]
 
     elif type_m == torch.nn.LayerNorm:
         # Having "layers" in the name means m is a per-module layer norm
@@ -378,8 +407,38 @@ def hf_forward_hook_fn(registered_name, save_dict, aux, editing_fn, m, _, output
 
         else:
             output = rearrange(outputs, "(b s) h -> b s h", b=aux[0])
+    else:
+        raise NotImplementedError
 
     if editing_fn is not None:
         output = editing_fn(output)
 
     save_dict[registered_name] = output.detach().cpu()
+
+    # Prefer not to return if we don't have to
+    if editing_fn is not None:
+        if type_m == torch.nn.Embedding or type_m == OPTLearnedPositionalEmbedding:
+            retval = output
+
+        elif type_m == OPTAttention:
+            retval = (output, *outputs[1:])
+
+        elif type_m == torch.nn.LayerNorm:
+            # Having "layers" in the name means m is a per-module layer norm
+            if layer_type == "final_layer_norm" and "layers" in registered_name:
+                retval = rearrange(output, "b s h -> (b s) h")
+
+            else:
+                retval = outputs
+
+        elif type_m == torch.nn.Linear:
+            if layer_type in ["q_proj", "k_proj", "v_proj"]:
+                retval = output
+
+            else:
+                retval = rearrange(output, "b s h -> (b s) h")
+
+        else:
+            raise NotImplementedError
+
+        return retval

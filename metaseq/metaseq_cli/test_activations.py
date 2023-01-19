@@ -8,7 +8,6 @@ import torch
 from opt_client import Client
 from hook_utils import get_activation_capture_hook_dict, apply_forward_hook
 from activation_utils import ActivationPayload
-from test_activation_editing import diag_elementwise_scaling
 
 
 def prepare_args():
@@ -119,7 +118,6 @@ def retrieve_opt_activations(mapping, client, prompts):
     acts = client.get_edited_activations(
         prompts,
         desired_module_activations=module_names,
-        activation_editing_fns={module_names[0]: diag_elementwise_scaling}
     )
 
     def _format_results(activations_batched):
@@ -147,7 +145,6 @@ def retrieve_hf_activations(mapping, client, model, prompts, aux):
     def _retrieve_hooked_acts(client, model, prompts, module_names):
         activation_payload = ActivationPayload(
             module_names_activation_retrieval=module_names,
-            module_editing_fn_pairs={module_names[0]: diag_elementwise_scaling},
         )
         hook_dict, acts = get_activation_capture_hook_dict(
             model,
