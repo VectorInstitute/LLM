@@ -51,18 +51,33 @@ _LayerOutput = tuple[Any]
 _Activation = Union[Tensor, tuple[Tensor]]
 
 
-# TODO: Remove before PR
-def breakpoint_rank0():
-    if torch.distributed.get_rank() == 0:
-        breakpoint()
+# Helper functions for debugging activation editing functionality
+def replace_with_ones(act):
+    out = torch.ones_like(act, dtype=act.dtype).cuda()
+    return out
+
+def diag_elementwise_scaling(act):
+    x = act * ((torch.eye(*act.shape[-2:]).cuda() * 2) + 1)
+    out = x.to(act.dtype)
+    return out
 
 
 def scatter_from_rank0_to_tensor_model_parallel_region(tensor):
-    # This will NOT work for multi-node unless model parallel group == global group
+    """
+    Scatter some tensor from rank0 to the rest of the tensor model parallel
+    group.
+
+    Note that this will not work for the general case where we have multiple
+    tensor model parallel groups.
+    """
     # Need to broadcast first, since `scatter_to_tensor_model_parallel_region`
     # assumes that every rank has the same tensor, which is not the case for
     # activation editing.
-    torch.distributed.broadcast(tensor, src=0, group=get_tensor_model_parallel_group())
+    torch.distributed.broadcast(
+        tensor,
+        src=0,
+        group=get_tensor_model_parallel_group()
+    )
 
     output = scatter_to_tensor_model_parallel_region(tensor)
     return output
@@ -70,18 +85,16 @@ def scatter_from_rank0_to_tensor_model_parallel_region(tensor):
 
 @dataclass
 class ActivationPayload:
+    """
+    Payload object which contains all necessary information for every request
+    relevant to activation manipulation.
+    """
     def __init__(
         self,
         module_names_activation_retrieval: tuple,
-        module_names_activation_probing: Optional[tuple] = None,
         module_editing_fn_pairs: Optional[dict] = None,
     ) -> None:
         self.module_names_activation_retrieval = module_names_activation_retrieval
-
-        if module_names_activation_probing is not None:
-            self.module_names_activation_probing = module_names_activation_probing
-        else:
-            self.module_names_activation_probing = ()
 
         if module_editing_fn_pairs is not None:
             self.module_editing_fn_pairs = module_editing_fn_pairs
@@ -90,6 +103,7 @@ class ActivationPayload:
 
 
 class GatherFunctions:
+    """Class which holds all implemented gather functions."""
     @staticmethod
     def unity_gather(
         registered_name: str,
@@ -152,6 +166,7 @@ class GatherFunctions:
 
 
 class ScatterFunctions:
+    """Class which holds all implemented scatter functions."""
     @staticmethod
     def unity_scatter(
         registered_name: str,
@@ -206,11 +221,9 @@ class ScatterFunctions:
 
 
 class RearrangeFunctions:
-    # TODO: In the future, it could be helpful to define an additional class
-    #       called ExtractActivationFunctions. This would pull out the logic
-    #       in the current rearrange functions which separates the
-    #       activation(s) from any auxillary data that needs to be
-    #       re-scattered.
+    """
+    Class which holds all implemented rearrange and undo rearrange functions.
+    """
     @staticmethod
     def unity_rearrange(
         registered_name: str,
@@ -490,7 +503,7 @@ class LayerRules:
         functions for retrieving these rules given a Layer, as well as validity
         checks for rules.
         """
-        # Collection of all the layer we wish to define forward hook functions
+        # Collection of all the layers we wish to define forward hook functions
         # for
         self.defined_layers = (
             ColumnParallelLinear,
@@ -637,6 +650,7 @@ class LayerRules:
             raise Exception(f"Module: {module_type} missing rearrange rule")
 
 
+# Need to instantiate a global LayerRules object
 LAYER_RULES = LayerRules()
 
 
@@ -646,9 +660,7 @@ class ShardedActivation:
         registered_name: str,
         module: nn.Module,
         aux: tuple[Any],
-        module_list: dict[str, type[nn.Module]],
         layer_outputs: _LayerOutput,
-        is_input_activation: bool = False,
     ) -> None:
         # TODO: Support self.activations = Tuple[activations]
         #       - Hence the edit_fn should become edit_fns = Tuple[fns] of the
@@ -668,35 +680,17 @@ class ShardedActivation:
         self.module = module
         self.module_type = type(module)
         self.aux = aux
-        self.module_list = module_list
         self.layer_outputs = layer_outputs
         self.activations = None
 
-        self.is_input_activation = is_input_activation
         self.is_gathered = False
         self.is_rearranged = False
 
-        if not self.is_input_activation:
-            self.gather_fn = LAYER_RULES.get_gather_rule(self.module_type)
-            self.scatter_fn = LAYER_RULES.get_scatter_rule(self.module_type)
-            self.rearrange_fn = LAYER_RULES.get_rearrange_rule(
-                self.module_type)
-            self.undo_rearrange_fn = None
-        else:
-            layer_ordering = list(self.module_list)
-            current_layer_idx = layer_ordering.index(self.registered_name)
-            prev_layer_idx = current_layer_idx - 1
-            self.prev_layer_name = layer_ordering[prev_layer_idx]
-            # Swap the prev and current modules so rules work
-            self.original_module = self.module
-            self.module = self.module_list[self.prev_layer_name]
-            self.prev_layer_module_type = type(self.module)
-
-            # For probing input activations, we don't need to return anything
-            self.gather_fn = LAYER_RULES.get_gather_rule(
-                self.prev_layer_module_type)
-            self.rearrange_fn = LAYER_RULES.get_rearrange_rule(
-                self.prev_layer_module_type)
+        self.gather_fn = LAYER_RULES.get_gather_rule(self.module_type)
+        self.scatter_fn = LAYER_RULES.get_scatter_rule(self.module_type)
+        self.rearrange_fn = LAYER_RULES.get_rearrange_rule(
+            self.module_type)
+        self.undo_rearrange_fn = None
 
     def gather(self):
         """

@@ -2,7 +2,6 @@ import codecs
 from contextlib import contextmanager
 from functools import partial
 import logging
-import pickle
 from typing import Optional
 
 import cloudpickle
@@ -42,7 +41,9 @@ logger = logging.getLogger(__name__)
 
 
 def decode_str(obj_in_str):
-    return cloudpickle.loads(codecs.decode(obj_in_str.encode("utf-8"), "base64"))
+    return cloudpickle.loads(
+        codecs.decode(obj_in_str.encode("utf-8"), "base64")
+    )
 
 
 @contextmanager
@@ -79,7 +80,11 @@ def get_activation_capture_hook_dict(
     """
     activation_dict, hook_dict = {}, {}
 
-    if isinstance(encoded_activation_payload, activation_utils.ActivationPayload):
+    # Skip decoding if payload is fed directly (case of local HF models)
+    if isinstance(
+        encoded_activation_payload,
+        activation_utils.ActivationPayload,
+    ):
         activation_payload = encoded_activation_payload
     else:
         activation_payload = decode_str(encoded_activation_payload)
@@ -87,36 +92,12 @@ def get_activation_capture_hook_dict(
     module_names_activation_retrieval = set(
         activation_payload.module_names_activation_retrieval
     )
-    module_names_activation_probing = set(
-        activation_payload.module_names_activation_probing
-    )
     module_editing_fn_pairs = activation_payload.module_editing_fn_pairs
-
-    module_list = {
-        n: m
-        for n, m in model.named_modules()
-        if n != ""
-    }
-
-    # Prevent multiple hooks in a module
-    assert set.intersection(
-        module_names_activation_retrieval,
-        module_names_activation_probing,
-    ) == set()
 
     for n, m in model.named_modules():
         editing_fn = module_editing_fn_pairs.get(n, None)
 
-        if n in module_names_activation_probing:
-            hook_dict[n] = partial(
-                forward_hook_probe_fn,
-                n,
-                activation_dict,
-                aux,
-                module_list,
-            )
-
-        elif n in module_names_activation_retrieval:
+        if n in module_names_activation_retrieval:
             if model_type == "opt":
                 hook_dict[n] = partial(
                     generic_forward_hook_fn,
@@ -124,7 +105,6 @@ def get_activation_capture_hook_dict(
                     activation_dict,
                     aux,
                     editing_fn,
-                    module_list,
                 )
 
             elif model_type == "hf":
@@ -139,44 +119,11 @@ def get_activation_capture_hook_dict(
     return hook_dict, activation_dict
 
 
-def forward_hook_probe_fn(
-    registered_name,
-    save_dict,
-    aux,
-    module_list,
-    self,
-    inputs,
-    _outputs,
-) -> None:
-    """Forward hook function to save inputs and outputs for debugging."""
-    raise NotImplementedError
-    inputs = inputs[0]
-
-    input_activation = activation_utils.ShardedActivation(
-        registered_name=registered_name,
-        module=self,
-        aux=aux,
-        module_list=module_list,
-        layer_outputs=inputs,
-        is_input_activation=True,
-    )
-
-    input_activation.gather()
-
-    if torch.distributed.get_rank() != 0:
-        return
-
-    input_activation.rearrange()
-
-    save_dict[registered_name] = input_activation.activations.detach().cpu()
-
-
 def generic_forward_hook_fn(
     registered_name,
     save_dict,
     aux,
     editing_fn,
-    module_list,
     self,
     _inputs,
     outputs,
@@ -189,20 +136,9 @@ def generic_forward_hook_fn(
         registered_name=registered_name,
         module=self,
         aux=aux,
-        module_list=module_list,
         layer_outputs=outputs,
-        is_input_activation=False,
     )
 
-    """
-    if registered_name == "decoder.layers.28.fc1":
-        print(f"fc1| rank{torch.distributed.get_rank()} input: {_inputs}")
-        print(f"fc1| rank{torch.distributed.get_rank()} output: {outputs}")
-
-    if registered_name == "decoder.layers.28.fc2":
-        print(f"fc2| rank{torch.distributed.get_rank()} input: {_inputs}")
-        print(f"fc2| rank{torch.distributed.get_rank()} output: {outputs}")
-    """
     # Gather the full activation using all ranks
     activation.gather()
 
@@ -232,12 +168,6 @@ def generic_forward_hook_fn(
     if editing_fn is not None:
         # Scatter the output to each rank
         activation.scatter()
-        #if registered_name == "decoder.layers.28.fc1":
-        #    breakpoint()
-
-        if registered_name == "decoder.layers.28.fc1":
-            print(f"fc1| rank{torch.distributed.get_rank()} output: {activation.layer_outputs}")
-            print(f"fc1| rank{torch.distributed.get_rank()} output: {activation.layer_outputs[0].shape}")
 
         return activation.layer_outputs
 

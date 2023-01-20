@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 import argparse
-from dataclasses import dataclass
 from typing import List, Dict, Union, Callable, Optional
 
 from accelerate import Accelerator
@@ -12,11 +11,7 @@ from opt_client import Client
 from hook_utils import get_activation_capture_hook_dict, apply_forward_hook
 from activation_utils import ActivationPayload
 from test_activation_editing import (
-    diag_elementwise_scaling,
-    replace_with_noise,
     replace_with_ones,
-    replace_with_stripe,
-    do_nothing,
 )
 
 
@@ -31,8 +26,10 @@ def prepare_args():
 # Globals
 NUM_LAYERS = 32
 
-# Layer type correspondences
-# Assists with comparability between layer types in models
+_LayerMappingCollection = Dict[str, List[str]]
+
+# Layer type correspondences assists with comparability between layer types in
+# models
 REMOTE_OPT_MAPPINGS = {
     "logits": ["decoder"],
     "embed_tokens": ["decoder.embed_tokens"],
@@ -75,6 +72,7 @@ HF_OPT_MAPPINGS = {
 
 
 def tree_transpose(tree):
+    """Helper function to transpose the layer type mappings dictionaries."""
     return {
         leaf: node
         for node, leaves in tree.items()
@@ -83,6 +81,10 @@ def tree_transpose(tree):
 
 
 def sort_modules(activations, mappings):
+    """
+    Sort a dictionary of module_name activation pairs based on the order they
+    appear in the layer type mappings dictionaries.
+    """
     # Define an order over layer types
     order = {module: idx for idx, module in enumerate(mappings.keys())}
 
@@ -97,9 +99,6 @@ def sort_modules(activations, mappings):
         module_name: activations[module_name]
         for module_name in sorted_module_names
     }
-
-
-_LayerMappingCollection = Dict[str, List[str]]
 
 
 class TestModel:
@@ -159,6 +158,8 @@ class TestRemoteOPTModel(TestModel):
             if edit_fn is not None:
                 editing_fns[module_name] = edit_fn
                 print(f"OPT editing: {module_name} - {edit_fn}")
+        if len(editing_fns) == 0:
+            print("OPT not editing")
 
         # This is handy for debugging what layers are doing what
         acts = self.client.get_edited_activations(
@@ -303,12 +304,14 @@ class TestHFModel(TestModel):
             if edit_fn is not None:
                 editing_fns[module_name] = edit_fn
                 print(f"HF OPT editing: {module_name} - {edit_fn}")
+        if len(editing_fns) == 0:
+            print("HF OPT not editing")
 
         # Remove special-cased modules from module list
         # These are activations that HF can return through API
         # TODO: These special-cased modules also can't be edited easily, not
-        # sure where to hook onto
-        # Hence we can't actually directly edit these yet
+        # sure where to hook onto. Hence we can't actually directly edit these
+        # yet
         special_modules = {}
         remove_modules = []
         for m in modules:
@@ -346,8 +349,6 @@ class TestHFModel(TestModel):
         # Prepare inputs
         formatted_prompts, input_ids_list = self._format_prompts(prompts)
 
-        print(f"Generating on prompts: {formatted_prompts}")
-
         with apply_forward_hook(self.hf_model, hook_dict):
             outputs = self._get_hf_logits(formatted_prompts)
 
@@ -372,7 +373,6 @@ def main(args):
     ]
 
     # Remote OPT module request objects
-    # TODO: Special case decoder, attention maps, etc.
     remote_opt_modules_edited = {
         "decoder": None,
         "decoder.layers.27": None,
@@ -469,32 +469,37 @@ def main(args):
                           f"with max diff "
                           f"{torch.abs(group1_ex - group2_ex).max()}")
 
-
     print("OPT Edited vs HF Edited")
-    compare_activations(remote_opt_acts_edited, hf_opt_acts_edited, remote_opt_mappings, hf_opt_mappings)
-
-    #print("OPT Edited vs HF Plain")
-    #compare_activations(remote_opt_acts_edited, hf_opt_acts_plain, remote_opt_mappings, hf_opt_mappings)
-
-    #print("OPT Plain vs HF Edited")
-    #compare_activations(remote_opt_acts_plain, hf_opt_acts_edited, remote_opt_mappings, hf_opt_mappings)
+    compare_activations(
+        remote_opt_acts_edited,
+        hf_opt_acts_edited,
+        remote_opt_mappings,
+        hf_opt_mappings
+    )
 
     print("OPT Plain vs HF Plain")
-    compare_activations(remote_opt_acts_plain, hf_opt_acts_plain, remote_opt_mappings, hf_opt_mappings)
+    compare_activations(
+        remote_opt_acts_plain,
+        hf_opt_acts_plain,
+        remote_opt_mappings,
+        hf_opt_mappings
+    )
 
     print("OPT Plain vs OPT Edited")
-    compare_activations(remote_opt_acts_plain, remote_opt_acts_edited, remote_opt_mappings, remote_opt_mappings)
+    compare_activations(
+        remote_opt_acts_plain,
+        remote_opt_acts_edited,
+        remote_opt_mappings,
+        remote_opt_mappings
+    )
 
     print("HF Plain vs HF Edited")
-    compare_activations(hf_opt_acts_plain, hf_opt_acts_edited, hf_opt_mappings, hf_opt_mappings)
-
-
-    # TODO: Layer 28 fc2 has some weird activation after striping, check it out
-    #       Seems like information is mixed between batches, check out
-    #       activation functions (prob not) or biases or anything else
-    #       Could also be the way we implement the inverse rearrange and scatter
-
-    breakpoint()
+    compare_activations(
+        hf_opt_acts_plain,
+        hf_opt_acts_edited,
+        hf_opt_mappings,
+        hf_opt_mappings
+    )
 
 
 if __name__ == "__main__":

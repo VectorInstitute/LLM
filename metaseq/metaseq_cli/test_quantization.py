@@ -22,7 +22,6 @@ def main():
         bit_width=8
     ).cpu()
 
-    breakpoint()
     assert torch.allclose(weight, new_weight, atol=1.2e-1)
     assert torch.allclose(weight.sum(), new_weight.sum(), atol=1e-1)
 

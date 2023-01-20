@@ -84,7 +84,6 @@ class Client:
 
         return resp.json()["module_names"]
 
-
     def weight(self, module_name):
         """
         Helper function that gives some flexibility to pinging various model
@@ -116,7 +115,7 @@ class Client:
         """can think of context as the input_list and the token logprobs we want as the target_list"""
         all_toks = self.tokenize([p for p in itertools.chain(input_list, target_list)])
 
-        all_inputs, input_tok_lens, target_tok_lens = [], [], []
+        all_inputs, target_tok_lens = [], []
 
         # concatenate the input and target tokens
         for input_tok, target_tok in zip(
@@ -144,56 +143,36 @@ class Client:
         return output
 
     def get_activations(self, prompts, desired_module_activations):
-        activation_payload = ActivationPayload(
-            module_names_activation_retrieval=desired_module_activations,
-            module_names_activation_probing=(),
-            module_editing_fn_pairs={},
+        # Don't break API yet
+        return self.get_edited_activations(
+            prompts,
+            desired_module_activations,
+            activation_editing_fns=None,
         )
 
-        encoded_activation_payload = encode_obj(activation_payload)
-
-        result = self._generate(
-            prompts=prompts,
-            temperature=1.0,
-            response_length=0,
-            top_p=1.0,
-            echo=False,
-            encoded_activation_payload=encoded_activation_payload,
-        )
-
-        activations = [
-            {k: decode_str(v) for k, v in c["activations"].items()}
-            for c in result["choices"]
-        ]
-
-        return activations
-
-    def get_edited_activations(self, prompts, desired_module_activations, desired_module_probing = None, activation_editing_fns = None):
+    def get_edited_activations(
+        self,
+        prompts,
+        desired_module_activations,
+        activation_editing_fns=None,
+    ):
         assert desired_module_activations is not None
-        if desired_module_probing is None:
-            desired_module_probing = ()
         if activation_editing_fns is None:
             activation_editing_fns = {}
 
         activation_payload = ActivationPayload(
             module_names_activation_retrieval=desired_module_activations,
-            module_names_activation_probing=desired_module_probing,
             module_editing_fn_pairs=activation_editing_fns,
         )
 
         # Make sure module names are valid
         module_names = self.module_names
         desired_module_activations = set(desired_module_activations)
-        desired_module_probing = set(desired_module_probing)
 
-        assert set.intersection(
-            desired_module_activations,
-            desired_module_probing,
-        ) == set()
-        all_modules = desired_module_activations | desired_module_probing
-        for m in all_modules:
+        for m in desired_module_activations:
             assert m in module_names, f"Module: {m} does not exist in model"
 
+        # Encode the payload for transit over http
         encoded_activation_payload = encode_obj(activation_payload)
 
         result = self._generate(
@@ -205,6 +184,7 @@ class Client:
             encoded_activation_payload=encoded_activation_payload,
         )
 
+        # Decode the return string back into tensors
         activations = [
             {k: decode_str(v) for k, v in c["activations"].items()}
             for c in result["choices"]
