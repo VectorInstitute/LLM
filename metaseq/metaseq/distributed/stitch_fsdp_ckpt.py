@@ -594,6 +594,9 @@ def reshard_megatron_parts(model_parts, new_model_part_count=1):
             assert_all_close(key)
             _copy_key_to_all_parts(key)
 
+        for mp_part in model_parts:
+            mp_part[key] = None
+
     for new_model_part in new_model_parts:
         assert len(new_model_part.keys()) >= len(model_parts[0].keys())
         assert "decoder.layers.0.ffn_layernorm.lns.0.weight" not in new_model_part
