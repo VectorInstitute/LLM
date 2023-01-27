@@ -552,6 +552,7 @@ def reshard_megatron_parts(model_parts, new_model_part_count=1):
 
         elif "layer_norm" in key:
             assert_all_close(key)
+            # Only save to cpu on the respective rank
             _copy_key_to_all_parts(key)
 
         elif "fc1" in key or "k_proj" in key or "q_proj" in key or "v_proj" in key:
@@ -593,6 +594,10 @@ def reshard_megatron_parts(model_parts, new_model_part_count=1):
         else:
             assert_all_close(key)
             _copy_key_to_all_parts(key)
+
+        # Free up memory
+        for mp_part in model_parts:
+            mp_part[key] = None
 
     for new_model_part in new_model_parts:
         assert len(new_model_part.keys()) >= len(model_parts[0].keys())

@@ -45,21 +45,27 @@ DEFAULT_PORT = 6010
 # reshard-model_part-7.pt
 
 # TODO: change this for each model
-MODEL_PARALLEL = 32
-TOTAL_WORLD_SIZE = 32
+#MODEL_PARALLEL = 32
+#TOTAL_WORLD_SIZE = 32
+MODEL_PARALLEL = 2
+TOTAL_WORLD_SIZE = 2
 
 # MODEL_PARALLEL = 8
 # TOTAL_WORLD_SIZE = 8
 
-#CHECKPOINT_FOLDER = "/checkpoint/opt_test/original/OPT-6.7B"
+CHECKPOINT_FOLDER = "/checkpoint/opt_test/original/OPT-6.7B"
+CHECKPOINT_LOCAL = "/checkpoint/opt_test/original/OPT-6.7B"
+#CHECKPOINT_FOLDER = "/checkpoint/opt_test/original/OPT-6.7B/resharded_megatron"
+#CHECKPOINT_LOCAL = "/checkpoint/opt_test/original/OPT-6.7B/resharded_megatron"
+
 # CHECKPOINT_FOLDER = "/checkpoint/opt_test/original/OPT-125M"
 # CHECKPOINT_LOCAL = "/checkpoint/opt_test/original/OPT-125M"
 
 # CHECKPOINT_FOLDER = "/checkpoint/opt_test/original/OPT-175B"
 # CHECKPOINT_LOCAL = "/checkpoint/opt_test/original/OPT-175B"
 
-CHECKPOINT_FOLDER = "/checkpoint/opt_test/original/OPT-175B-mp32"
-CHECKPOINT_LOCAL = "/checkpoint/opt_test/original/OPT-175B-mp32"
+#CHECKPOINT_FOLDER = "/checkpoint/opt_test/original/OPT-175B-mp32"
+#CHECKPOINT_LOCAL = "/checkpoint/opt_test/original/OPT-175B-mp32"
 
 # CHECKPOINT_FOLDER = "/checkpoint/opt_test/original/OPT-13B-mp8"
 # CHECKPOINT_LOCAL = "/checkpoint/opt_test/original/OPT-13B-mp8"
@@ -72,7 +78,7 @@ BPE_VOCAB = "/scratch/ssd002/projects/opt_test/gpt2-vocab.json"
 # MODEL_FILE = os.path.join(CHECKPOINT_FOLDER, "reshard.pt")
 
 # MEGATRON stuff
-MODEL_FILE = os.path.join(CHECKPOINT_FOLDER, "reshard.pt")
+MODEL_FILE = os.path.join(CHECKPOINT_FOLDER, "megatronreshard.pt")
 
 
 LAUNCH_ARGS = [
