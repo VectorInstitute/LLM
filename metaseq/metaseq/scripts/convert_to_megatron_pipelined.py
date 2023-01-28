@@ -75,7 +75,7 @@ def probe_gpu_and_cpu_mem(location=None):
 
     logger.info(f"Rank {rank} CPU mem: {cpu_used} / "
                 f"{cpu_available} | threshold(user-defined) - "
-                f"{MAX_CPU_RAM / UNITS} | location {location}")
+                f"{MAX_CPU_RAM / UNITS * 2}G | location {location}")
 
 
 def make_temp_workspace(cfg):
@@ -302,6 +302,7 @@ def reshard_partial_checkpoints(save_paths, target_mp, tmpdir_path):
 
         probe_gpu_and_cpu_mem("reshard_partial_checkpoints pre megatron")
 
+        # NOTE: Memory spikes in this
         state_dict = reshard_megatron_parts(
             state_dict,
             new_model_part_count=target_mp,
