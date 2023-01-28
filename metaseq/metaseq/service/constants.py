@@ -45,10 +45,10 @@ DEFAULT_PORT = 6969
 # reshard-model_part-7.pt
 
 # TODO: change this for each model
-MODEL_PARALLEL = 2
-TOTAL_WORLD_SIZE = 2
+MODEL_PARALLEL = 32
+TOTAL_WORLD_SIZE = 32
 
-CHECKPOINT_FOLDER = "/checkpoint/opt_test/original/OPT-6.7B"
+CHECKPOINT_FOLDER = "/checkpoint/opt_test/original/OPT-175B-mp32"
 #CHECKPOINT_FOLDER = "/checkpoint/opt_test/original/OPT-125M"
 
 ###
@@ -59,7 +59,7 @@ BPE_VOCAB = "/scratch/ssd002/projects/opt_test/gpt2-vocab.json"
 # MODEL_FILE = os.path.join(CHECKPOINT_FOLDER, "reshard.pt")
 
 # MEGATRON stuff
-MODEL_FILE = os.path.join(CHECKPOINT_FOLDER, "megatronreshard.pt")
+MODEL_FILE = os.path.join(CHECKPOINT_FOLDER, "reshard.pt")
 
 
 LAUNCH_ARGS = [
@@ -71,7 +71,7 @@ LAUNCH_ARGS = [
     "--bpe hf_byte_bpe",
     f"--merges-filename {BPE_MERGES}",  # TODO(susanz): hack for getting interactive_hosted working on public repo
     f"--vocab-filename {BPE_VOCAB}",  # TODO(susanz): hack for getting interactive_hosted working on public repo
-    f"--path {CHECKPOINT_FOLDER}/megatronreshard.pt",
+    f"--path {CHECKPOINT_FOLDER}/reshard.pt",
     "--beam 1 --nbest 1",
     "--distributed-port 13000",
     "--checkpoint-shard-count 1",
