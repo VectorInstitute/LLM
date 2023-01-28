@@ -53,6 +53,7 @@ logger = logging.getLogger(__file__)
 _MetaseqConfig = Any
 _FSDPModel = Any
 
+cfg = None
 MAX_CPU_RAM = None
 TARGET_MP_SIZE = None
 UNITS = 1_000_000_000
@@ -65,22 +66,22 @@ def create_generation_config_with_defaults(
 ) -> _MetaseqConfig:
     files = glob.glob(f"{model_path}/reshard*.pt")
 
+    global cfg
+
     MP = len(files)
     BPE_MERGES = model_path + "/gpt2-merges.txt"
     BPE_VOCAB = model_path + "/gpt2-vocab.json"
 
     global MAX_CPU_RAM
-    MAX_CPU_RAM = max_cpu_ram
+    MAX_CPU_RAM = int(max_cpu_ram)
 
     global TARGET_MP_SIZE
-    TARGET_MP_SIZE = target_mp_size
+    TARGET_MP_SIZE = int(target_mp_size)
 
-    logger.info(
-        "Running megatron resharding with args: ",
-        f"location: {model_path} | ",
-        f"target_mp_size: {target_mp_size} | ",
-        f"max_cpu_ram: {max_cpu_ram} | ",
-    )
+    logger.info(f"Running with args - location: {model_path} | "
+                f"target_mp_size: {target_mp_size} | "
+                f"max_cpu_ram: {max_cpu_ram} | ")
+    logger.info(f"MP size: {MP}")
 
     # Skeleton out all the annoying command line args we can infer
     ARGS = [
@@ -106,8 +107,10 @@ def create_generation_config_with_defaults(
         "1",
         "--use-sharded-state",
         model_path,
+        "--distributed-port",
+        "13000",
     ]
-    print(ARGS)
+    logger.info(f"ARGS: {ARGS}")
 
     # build up the config file
     parser = options.get_generation_parser()
@@ -145,7 +148,7 @@ def probe_cpu_mem(location: Optional[str] = None) -> None:
     a location description.
     """
     rank = torch.distributed.get_rank()
-    
+
     mem_snapshot = psutil.virtual_memory()
     cpu_available = mem_snapshot.available / UNITS
     cpu_used = mem_snapshot.used / UNITS
@@ -609,14 +612,21 @@ def worker_main(cfg: MetaseqConfig) -> None:
 
 
 def main():
+    global cfg
+
     # parser to be used like docstring shows
     real_parser = argparse.ArgumentParser()
-    real_parser.add_argument("location")
-    real_parser.add_argument("target_mp_size")
-    real_parser.add_argument("max_cpu_ram")
+    real_parser.add_argument("--location")
+    real_parser.add_argument("--target_mp_size")
+    real_parser.add_argument("--max_cpu_ram")
     args = real_parser.parse_args()
 
-    cfg = create_generation_config_with_defaults(args.location)
+    cfg = create_generation_config_with_defaults(
+        args.location,
+        args.target_mp_size,
+        args.max_cpu_ram,
+    )
+    logger.info(f"Config: {cfg}")
     distributed_utils.call_main(cfg, worker_main)
 
 
