@@ -45,10 +45,10 @@ DEFAULT_PORT = 6969
 # reshard-model_part-7.pt
 
 # TODO: change this for each model
-MODEL_PARALLEL = 32
-TOTAL_WORLD_SIZE = 32
+MODEL_PARALLEL = 16
+TOTAL_WORLD_SIZE = 16
 
-CHECKPOINT_FOLDER = "/checkpoint/opt_test/original/OPT-175B-mp32"
+CHECKPOINT_FOLDER = "/checkpoint/opt_test/original/OPT-175B-mp32/resharded_megatron"
 #CHECKPOINT_FOLDER = "/checkpoint/opt_test/original/OPT-125M"
 
 ###
