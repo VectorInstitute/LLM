@@ -45,7 +45,7 @@ from metaseq.service.constants import (
 from metaseq.service.utils import get_my_ip, encode_fn, build_logger
 from metaseq.service.responses import OAIResponse
 
-from hook_utils import get_activation_capture_hook_dict, apply_forward_hook
+from metaseq_cli.hook_utils import get_activation_capture_hook_dict, apply_forward_hook
 
 
 app = Flask(__name__)
