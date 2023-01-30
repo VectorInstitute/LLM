@@ -5,13 +5,20 @@ import pickle
 from dataclasses import dataclass
 from functools import cached_property
 
+import cloudpickle
 import requests
+
+from metaseq_cli.activation_utils import ActivationPayload
 
 
 def check_response(resp):
     assert (
         resp.status_code == 200
     ), f"error in request with code {resp.status_code} resp {resp.json()}"
+
+
+def encode_obj(obj):
+    return codecs.encode(cloudpickle.dumps(obj), "base64").decode("utf-8")
 
 
 def decode_str(obj_in_str):
@@ -37,7 +44,7 @@ class Client:
         top_p=0.9,
         echo=False,
         logprobs=0,
-        desired_module_activations=(),
+        encoded_activation_payload=None,
     ):
         prompt_dict = {
             "prompt": prompts,
@@ -48,7 +55,7 @@ class Client:
             # this arg same as the semantics of
             # https://github.com/facebookresearch/metaseq/blob/689fb79b53a2441bf815ae30e64b9438dac027bd/metaseq/hub_utils.py#L568
             "echo": echo,
-            "desired_module_activations": desired_module_activations,
+            "encoded_activation_payload": encoded_activation_payload,
             "logprobs": logprobs,
         }
 
@@ -76,7 +83,6 @@ class Client:
         check_response(resp)
 
         return resp.json()["module_names"]
-
 
     def weight(self, module_name):
         """
@@ -109,7 +115,7 @@ class Client:
         """can think of context as the input_list and the token logprobs we want as the target_list"""
         all_toks = self.tokenize([p for p in itertools.chain(input_list, target_list)])
 
-        all_inputs, input_tok_lens, target_tok_lens = [], [], []
+        all_inputs, target_tok_lens = [], []
 
         # concatenate the input and target tokens
         for input_tok, target_tok in zip(
@@ -137,15 +143,48 @@ class Client:
         return output
 
     def get_activations(self, prompts, desired_module_activations):
+        # Don't break API yet
+        return self.get_edited_activations(
+            prompts,
+            desired_module_activations,
+            activation_editing_fns=None,
+        )
+
+    def get_edited_activations(
+        self,
+        prompts,
+        desired_module_activations,
+        activation_editing_fns=None,
+    ):
+        assert desired_module_activations is not None
+        if activation_editing_fns is None:
+            activation_editing_fns = {}
+
+        activation_payload = ActivationPayload(
+            module_names_activation_retrieval=desired_module_activations,
+            module_editing_fn_pairs=activation_editing_fns,
+        )
+
+        # Make sure module names are valid
+        module_names = self.module_names
+        desired_module_activations = set(desired_module_activations)
+
+        for m in desired_module_activations:
+            assert m in module_names, f"Module: {m} does not exist in model"
+
+        # Encode the payload for transit over http
+        encoded_activation_payload = encode_obj(activation_payload)
+
         result = self._generate(
             prompts=prompts,
             temperature=1.0,
             response_length=0,
             top_p=1.0,
             echo=False,
-            desired_module_activations=desired_module_activations,
+            encoded_activation_payload=encoded_activation_payload,
         )
 
+        # Decode the return string back into tensors
         activations = [
             {k: decode_str(v) for k, v in c["activations"].items()}
             for c in result["choices"]

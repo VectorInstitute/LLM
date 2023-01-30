@@ -5,8 +5,9 @@ from accelerate import Accelerator
 from transformers import OPTForCausalLM
 import torch
 
-from opt_client import Client
-from hook_utils import get_activation_capture_hook_dict, apply_forward_hook
+from metaseq_cli.opt_client import Client
+from metaseq_cli.hook_utils import get_activation_capture_hook_dict, apply_forward_hook
+from metaseq_cli.activation_utils import ActivationPayload
 
 
 def prepare_args():
@@ -114,7 +115,10 @@ def retrieve_opt_activations(mapping, client, prompts):
     else:
         module_names = mapping
 
-    acts = client.get_activations(prompts, module_names)
+    acts = client.get_edited_activations(
+        prompts,
+        desired_module_activations=module_names,
+    )
 
     def _format_results(activations_batched):
         result = {n: [] for n in module_names}
@@ -139,9 +143,12 @@ def retrieve_hf_activations(mapping, client, model, prompts, aux):
     """
     # Helper functions for hooked activations
     def _retrieve_hooked_acts(client, model, prompts, module_names):
+        activation_payload = ActivationPayload(
+            module_names_activation_retrieval=module_names,
+        )
         hook_dict, acts = get_activation_capture_hook_dict(
             model,
-            module_names,
+            activation_payload,
             aux=aux,
             model_type="hf",
         )
@@ -187,7 +194,13 @@ def retrieve_hf_activations(mapping, client, model, prompts, aux):
     return acts
 
 
-def assert_activations_correctness(hf_results, opt_results, act_type="transformer_layer", crash_on_false=True, debug=False):
+def assert_activations_correctness(
+        hf_results,
+        opt_results,
+        act_type="transformer_layer",
+        crash_on_false=True,
+        debug=False
+):
     """
     Helper function taking HF and OPT activation collections, and
     makes sure they're allclose within some range
@@ -265,6 +278,7 @@ def assert_activations_correctness(hf_results, opt_results, act_type="transforme
 
             if not allclose:
                 allclose_fails.append(f"{act_type} | layer {layer_idx} | batch {batch_idx}")
+                print(f"{act_type} | layer {layer_idx} | batch {batch_idx}: {diff}")
 
             total_diff += diff
 
@@ -299,23 +313,38 @@ def main(args):
     batch_size = len(prompts)
 
     # Initialize OPT-HF layer mappings
-    opt_mappings, hf_mappings = init_opt_hf_mappings(len(hf_model.model.decoder.layers))
+    opt_mappings, hf_mappings = init_opt_hf_mappings(
+        len(hf_model.model.decoder.layers))
 
     # For each mapping, retrieve + format activations and compare using allclose
     diff = {}
     fails = []
-    for (opt_type, opt_map), (hf_type, hf_map) in zip(opt_mappings.items(), hf_mappings.items()):
+    for (opt_type, opt_map), (hf_type, hf_map) in zip(
+            opt_mappings.items(), hf_mappings.items()):
         assert opt_type == hf_type
 
         opt_acts = retrieve_opt_activations(opt_map, client, prompts)
-        hf_acts = retrieve_hf_activations(hf_map, client, hf_model, prompts, aux=(batch_size,))
+        hf_acts = retrieve_hf_activations(
+            hf_map,
+            client,
+            hf_model,
+            prompts,
+            aux=(batch_size,)
+        )
 
-        diff[opt_type], allclose_fails = assert_activations_correctness(hf_acts, opt_acts, act_type=opt_type, crash_on_false=False, debug=args.debug)
+        diff[opt_type], allclose_fails = assert_activations_correctness(
+            hf_acts,
+            opt_acts,
+            act_type=opt_type,
+            crash_on_false=False,
+            debug=args.debug
+        )
         fails.append(allclose_fails)
 
     for mapping_allclose_fails in fails:
         if mapping_allclose_fails:
-            print(mapping_allclose_fails)
+            pass
+            #print(mapping_allclose_fails)
 
 
 if __name__ == "__main__":
