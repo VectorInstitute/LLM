@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 import argparse
-from typing import List, Dict, Union, Callable, Optional
+from typing import List, Dict, Callable, Optional, Any, Tuple
 
 from accelerate import Accelerator
 from transformers import OPTForCausalLM
@@ -8,7 +8,10 @@ import torch
 from torch import Tensor
 
 from metaseq_cli.opt_client import Client
-from metaseq_cli.hook_utils import get_activation_capture_hook_dict, apply_forward_hook
+from metaseq_cli.hook_utils import (
+    get_activation_capture_hook_dict,
+    apply_forward_hook,
+)
 from metaseq_cli.activation_utils import ActivationPayload
 from metaseq_cli.test_activation_editing import (
     replace_with_ones,
@@ -24,7 +27,7 @@ def prepare_args():
 
 
 # Globals
-NUM_LAYERS = 32
+NUM_LAYERS = 32     # OPT-6.7B specific
 
 _LayerMappingCollection = Dict[str, List[str]]
 
@@ -71,7 +74,7 @@ HF_OPT_MAPPINGS = {
 }
 
 
-def tree_transpose(tree):
+def tree_transpose(tree: Dict[str, List[str]]) -> Dict[str, str]:
     """Helper function to transpose the layer type mappings dictionaries."""
     return {
         leaf: node
@@ -80,7 +83,10 @@ def tree_transpose(tree):
     }
 
 
-def sort_modules(activations, mappings):
+def sort_modules(
+    activations: Dict[str, Any],
+    mappings: Dict[str, List[str]],
+) -> Dict[str, Any]:
     """
     Sort a dictionary of module_name activation pairs based on the order they
     appear in the layer type mappings dictionaries.
@@ -92,7 +98,10 @@ def sort_modules(activations, mappings):
     transposed_mappings = tree_transpose(mappings)
 
     # Sort the module names in activations by the defined layer type
-    sorted_module_names = sorted(activations, key=lambda x: order[transposed_mappings[x]])
+    sorted_module_names = sorted(
+        activations,
+        key=lambda x: order[transposed_mappings[x]],
+    )
 
     # Want to return a dict with the new insertion order
     return {
@@ -151,9 +160,8 @@ class TestRemoteOPTModel(TestModel):
         modules: Dict[str, Optional[Callable]],
     ) -> List[Tensor]:
         print(f"OPT modules: {modules}")
-        # Do something to get activations
-        # Should be 1 forward pass only
         editing_fns: Dict[str, Callable] = {}
+
         for module_name, edit_fn in modules.items():
             if edit_fn is not None:
                 editing_fns[module_name] = edit_fn
@@ -161,7 +169,6 @@ class TestRemoteOPTModel(TestModel):
         if len(editing_fns) == 0:
             print("OPT not editing")
 
-        # This is handy for debugging what layers are doing what
         acts = self.client.get_edited_activations(
             prompts,
             desired_module_activations=list(modules.keys()),
@@ -216,7 +223,10 @@ class TestHFModel(TestModel):
         assert not sum(list(output_loading_info.values()), [])
         self.hf_model = accelerator.prepare(self.hf_model)
 
-    def _format_prompts(self, prompts):
+    def _format_prompts(
+        self,
+        prompts: List[str],
+    ) -> Tuple[Tensor, List[List[int]]]:
         """
         Given a prompt list of strings, prepend the BOS token and pad right.
         Return the formatted prompts as tokens.
@@ -238,7 +248,7 @@ class TestHFModel(TestModel):
 
         return formatted_prompts, input_ids_list
 
-    def _get_hf_logits(self, formatted_prompts):
+    def _get_hf_logits(self, formatted_prompts: Tensor) -> Any:
         """
         Forward pass through huggingface model using formatted/tokenized
         prompts.
@@ -254,7 +264,12 @@ class TestHFModel(TestModel):
 
         return output
 
-    def _slice_activation(self, module_name, activations, input_ids_list):
+    def _slice_activation(
+        self,
+        module_name: str,
+        activations: Tensor,
+        input_ids_list: List[List[int]],
+    ) -> List[Tensor]:
         """
         Huggingface return activations are full sequence padded, so we need to
         slice the pads out. Return a list of tensors, one tensor per example
@@ -274,7 +289,11 @@ class TestHFModel(TestModel):
 
         return sliced_acts
 
-    def _format_hooked_acts(self, acts, input_ids_list):
+    def _format_hooked_acts(
+        self,
+        acts: Dict[str, Tensor],
+        input_ids_list: List[List[int]]
+    ) -> Dict[str, List[Tensor]]:
         """
         For each module activation, slice the activation to the correct
         sequence lengths. The acts are a dictionary where the keys are the
@@ -282,7 +301,11 @@ class TestHFModel(TestModel):
         sequence lengths.
         """
         results = {
-            module_name: self._slice_activation(module_name, act, input_ids_list)
+            module_name: self._slice_activation(
+                module_name,
+                act,
+                input_ids_list,
+            )
             for module_name, act in acts.items()
         }
 
@@ -418,14 +441,20 @@ def main(args):
         prompts,
         remote_opt_modules_edited,
     )
-    remote_opt_acts_edited = sort_modules(remote_opt_acts_edited, REMOTE_OPT_MAPPINGS)
+    remote_opt_acts_edited = sort_modules(
+        remote_opt_acts_edited,
+        REMOTE_OPT_MAPPINGS,
+    )
 
     # Get opt activations without edits
     remote_opt_acts_plain = test_opt_model.manipulate_activations(
         prompts,
         remote_opt_modules_plain,
     )
-    remote_opt_acts_plain = sort_modules(remote_opt_acts_plain, REMOTE_OPT_MAPPINGS)
+    remote_opt_acts_plain = sort_modules(
+        remote_opt_acts_plain,
+        REMOTE_OPT_MAPPINGS,
+    )
 
     # Get huggingface opt activations with edits
     test_hf_model = TestHFModel(
@@ -465,8 +494,8 @@ def main(args):
             assert group1_mappings[group1_module] == group2_mappings[group2_module]
             for group1_ex, group2_ex in zip(group1_batch, group2_batch):
                 if not torch.allclose(group1_ex, group2_ex, atol=1e-1):
-                    print(f"Modules {group1_module}: {group2_module} failed allclose "
-                          f"with max diff "
+                    print(f"Modules {group1_module}: {group2_module} failed "
+                          f"allclose with max diff "
                           f"{torch.abs(group1_ex - group2_ex).max()}")
 
     print("OPT Edited vs HF Edited")

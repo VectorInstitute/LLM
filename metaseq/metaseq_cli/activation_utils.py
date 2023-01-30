@@ -15,11 +15,7 @@ from megatron.mpu.mappings import (
     gather_from_tensor_model_parallel_region,
     scatter_to_tensor_model_parallel_region,
 )
-from megatron.mpu.utils import (
-    split_tensor_along_last_dim,
-)
 from megatron.mpu.initialize import (
-    get_tensor_model_parallel_world_size,
     get_tensor_model_parallel_group,
 )
 from metaseq.modules.layer_norm import FusedLayerNorm
@@ -36,11 +32,6 @@ from metaseq.model_parallel.modules.multihead_attention import (
 from metaseq.model_parallel.models.transformer import (
     ModelParallelTransformerDecoder,
 )
-from transformers.models.opt.modeling_opt import (
-    OPTDecoderLayer,
-    OPTAttention,
-    OPTLearnedPositionalEmbedding,
-)
 from metaseq.quantization import (
     QuantizedColumnParallelLinear,
     QuantizedRowParallelLinear,
@@ -52,17 +43,22 @@ _Activation = Union[Tensor, tuple[Tensor]]
 
 
 # Helper functions for debugging activation editing functionality
-def replace_with_ones(act):
+def replace_with_ones(act: Tensor) -> Tensor:
+    """Replace an activation with an activation filled with ones."""
     out = torch.ones_like(act, dtype=act.dtype).cuda()
     return out
 
-def diag_elementwise_scaling(act):
+
+def diag_elementwise_scaling(act: Tensor) -> Tensor:
+    """Scale the diagonal elements of a tensor by 2."""
     x = act * ((torch.eye(*act.shape[-2:]).cuda() * 2) + 1)
     out = x.to(act.dtype)
     return out
 
 
-def scatter_from_rank0_to_tensor_model_parallel_region(tensor):
+def scatter_from_rank0_to_tensor_model_parallel_region(
+    tensor: Tensor,
+) -> Tensor:
     """
     Scatter some tensor from rank0 to the rest of the tensor model parallel
     group.
@@ -189,7 +185,9 @@ class ScatterFunctions:
     ) -> _LayerOutput:
         if not module.gather_output:
             output = (
-                scatter_from_rank0_to_tensor_model_parallel_region(layer_output[0]),
+                scatter_from_rank0_to_tensor_model_parallel_region(
+                    layer_output[0]
+                ),
                 *layer_output[1:],
             )
         return output
@@ -202,7 +200,9 @@ class ScatterFunctions:
         aux: tuple[Any],
     ) -> _LayerOutput:
         if "self_attn" in registered_name:
-            output = scatter_from_rank0_to_tensor_model_parallel_region(layer_output)
+            output = scatter_from_rank0_to_tensor_model_parallel_region(
+                layer_output,
+            )
             output = rearrange(output, "s1 s2 b k -> (b k) s1 s2")
         else:
             output = layer_output
@@ -216,7 +216,9 @@ class ScatterFunctions:
         layer_output: _LayerOutput,
         aux: tuple[Any],
     ) -> _LayerOutput:
-        output = scatter_from_rank0_to_tensor_model_parallel_region(layer_output)
+        output = scatter_from_rank0_to_tensor_model_parallel_region(
+            layer_output,
+        )
         return output
 
 
@@ -631,26 +633,25 @@ class LayerRules:
                     and layer_type in self.scatter_rules
                     and layer_type in self.rearrange_rules)
 
-    def get_gather_rule(self, module_type):
+    def get_gather_function(self, module_type):
         if module_type in self.gather_rules:
             return self.gather_rules[module_type]
         else:
             raise Exception(f"Module: {module_type} missing gather rule")
 
-    def get_scatter_rule(self, module_type):
+    def get_scatter_function(self, module_type):
         if module_type in self.scatter_rules:
             return self.scatter_rules[module_type]
         else:
             raise Exception(f"Module: {module_type} missing scatter rule")
 
-    def get_rearrange_rule(self, module_type):
+    def get_rearrange_function(self, module_type):
         if module_type in self.rearrange_rules:
             return self.rearrange_rules[module_type]
         else:
             raise Exception(f"Module: {module_type} missing rearrange rule")
 
 
-# Need to instantiate a global LayerRules object
 LAYER_RULES = LayerRules()
 
 
@@ -686,9 +687,9 @@ class ShardedActivation:
         self.is_gathered = False
         self.is_rearranged = False
 
-        self.gather_fn = LAYER_RULES.get_gather_rule(self.module_type)
-        self.scatter_fn = LAYER_RULES.get_scatter_rule(self.module_type)
-        self.rearrange_fn = LAYER_RULES.get_rearrange_rule(
+        self.gather_fn = LAYER_RULES.get_gather_function(self.module_type)
+        self.scatter_fn = LAYER_RULES.get_scatter_function(self.module_type)
+        self.rearrange_fn = LAYER_RULES.get_rearrange_function(
             self.module_type)
         self.undo_rearrange_fn = None
 

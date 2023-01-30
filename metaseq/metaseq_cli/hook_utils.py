@@ -2,7 +2,7 @@ import codecs
 from contextlib import contextmanager
 from functools import partial
 import logging
-from typing import Optional
+from typing import Optional, Any, Dict, Callable, Union
 
 import cloudpickle
 from einops import rearrange
@@ -40,14 +40,21 @@ from metaseq.quantization import (
 logger = logging.getLogger(__name__)
 
 
-def decode_str(obj_in_str):
+def decode_str(obj_in_str: str) -> Any:
+    """
+    Given some object that has been serialized then encoded into a string,
+    decode it and unserialize it back into the original object.
+    """
     return cloudpickle.loads(
         codecs.decode(obj_in_str.encode("utf-8"), "base64")
     )
 
 
 @contextmanager
-def apply_forward_hook(model, hook_dict):
+def apply_forward_hook(
+    model: torch.nn.Module,
+    hook_dict: Dict[str, Callable],
+) -> None:
     """
     Hook dict should be names of modules keyed by functions all hooks must
     have the actual signature as the register forward hook in pytorch
@@ -69,10 +76,10 @@ def apply_forward_hook(model, hook_dict):
 
 
 def get_activation_capture_hook_dict(
-    model,
-    encoded_activation_payload: activation_utils.ActivationPayload,
-    aux=None,
-    model_type="opt"
+    model: torch.nn.Module,
+    encoded_activation_payload: Union[activation_utils.ActivationPayload, str],
+    aux: Optional[tuple] = None,
+    model_type: str = "opt",    # TODO: deprecate this arg
 ):
     """
     Attach the specified hook forward-pass hook functions onto the given
@@ -101,10 +108,10 @@ def get_activation_capture_hook_dict(
             if model_type == "opt":
                 hook_dict[n] = partial(
                     generic_forward_hook_fn,
-                    n,
-                    activation_dict,
-                    aux,
-                    editing_fn,
+                    registered_name=n,
+                    save_dict=activation_dict,
+                    aux=aux,
+                    editing_fn=editing_fn,
                 )
 
             elif model_type == "hf":
@@ -120,13 +127,13 @@ def get_activation_capture_hook_dict(
 
 
 def generic_forward_hook_fn(
-    registered_name,
-    save_dict,
-    aux,
-    editing_fn,
-    self,
-    _inputs,
-    outputs,
+    registered_name: str,
+    save_dict: Dict[str, Tensor],
+    editing_fn: Callable,
+    self: torch.nn.Module,
+    _inputs: Any,
+    outputs: Any,
+    aux: Optional[tuple] = None,
 ) -> Optional[Tensor]:
     """
     Generic forward hook function that can be used for activation retrieval,
@@ -172,146 +179,22 @@ def generic_forward_hook_fn(
         return activation.layer_outputs
 
 
-def opt_forward_hook_fn(
-    registered_name,
-    save_dict,
-    aux,
-    editing_fn,
-    m,
-    _,
-    outputs,
-):
-    if torch.distributed.get_rank() == 0:
-        if editing_fn is None:
-            logger.info("Editing function is None")
-        else:
-            logger.info(f"Editing module {registered_name}!")
-            # TODO: Debugging
-            logger.info(f"Function is: {editing_fn}")
-
-    # NOTE: Don't consider inputs, since there can be arbitrary code between
-    #       module calls
-    type_m = type(m)
-
-    # every rank needs to do this
-    if type_m == ColumnParallelLinear or type_m == QuantizedColumnParallelLinear:
-        if not m.gather_output:
-            outputs = (
-                gather_from_tensor_model_parallel_region(outputs[0]),
-                *outputs[1:],
-            )
-    elif type_m == Dropout:
-        if "self_attn" in registered_name:
-            # NOTE: Newest megatron supports both first and last dim
-            # megatron only gathers the last dim, but we want to
-            # gather on the first dim so we permute it to the end
-            # and then permute it back
-            if not aux:
-                logger.info(
-                    ("Rank {}: Required auxillary data for self-attention maps"
-                    "is not present").format(torch.distributed.get_rank()))
-
-            outputs = gather_from_tensor_model_parallel_region(
-                rearrange(outputs, "(b k) s1 s2 -> s1 s2 b k", b=aux[0]))
-
-    elif type_m == torch.nn.Linear:
-        outputs = gather_from_tensor_model_parallel_region(outputs)
-
-    # only rank 0 needs to do the rest
-    if torch.distributed.get_rank() != 0:
-        return
-
-    # too scared to do isinstance checks
-    if type_m == ColumnParallelLinear or type_m == QuantizedColumnParallelLinear:
-
-        output = outputs[0]
-
-        if m.skip_bias_add:
-            output = output + outputs[1]
-
-        layer_type = registered_name.split(".")[-1]
-
-        # not always S x B x D, it's only when it's used in qkv_proj
-        # NOTE: OPT's qkv_proj combined projection is hard to compare with HF
-        if layer_type == "qkv_proj":
-            output = rearrange(output, "s b d -> b s d")
-
-        elif layer_type in ["q_proj", "k_proj", "v_proj"]:
-            output = rearrange(output, "s b d -> b s d")
-
-        elif "fc" in layer_type:
-            output = rearrange(output, "(s b) d -> b s d", b=aux[0])
-
-    elif type_m == RowParallelLinear or type_m == QuantizedRowParallelLinear:
-
-        output = outputs[0]
-
-        if m.skip_bias_add:
-            output = output + outputs[1]
-
-        layer_type = registered_name.split(".")[-1]
-
-        # not always S x B x D, it's only when it's used in outproj
-        if layer_type == "out_proj":
-            output = rearrange(output, "s b d -> b s d")
-
-        elif "fc" in layer_type:
-            output = rearrange(output, "(s b) d -> b s d", b=aux[0])
-
-    elif type_m in (
-        ModelParallelTransformerDecoder,
-        ModelParallelTransformerDecoderLayer,
-    ):
-        # the rest are aux info
-        output = outputs[0]
-
-    elif type_m == ModelParallelMultiheadAttention:
-        # the other param is just None
-        output, attn_bias = outputs[0]
-
-        if attn_bias is not None:
-            output = output + attn_bias
-
-    elif type_m == Dropout:
-        output = outputs
-
-        if "self_attn" not in registered_name:
-            output = rearrange(output, "s b d -> b s d")
-
-        else:
-            output = rearrange(output, "s1 s2 b k -> b k s1 s2")
-
-    else:
-        # VocabParallelEmbedding and final output_projection case
-        output = outputs
-
-    # some layers are always in S x B x D, permute them back
-    if type_m in (
-        ModelParallelTransformerDecoderLayer,
-        FusedLayerNorm,
-        ModelParallelMultiheadAttention,
-    ):
-        output = rearrange(output, "s b d -> b s d")
-
-    # Bind the final activation to the save dict
-    save_dict[registered_name] = output.detach().cpu()
-
-
 def hf_forward_hook_fn(
-    registered_name,
-    save_dict,
-    aux,
-    editing_fn,
-    m,
-    _,
-    outputs
-):
+    registered_name: str,
+    save_dict: Dict[str, Tensor],
+    editing_fn: Callable,
+    self: torch.nn.Module,
+    _inputs: Any,
+    outputs: Any,
+    aux: Optional[tuple] = None,
+) -> Optional[Tensor]:
+
     """
     Forward hook function for HuggingFace OPT model, conditioning on
     (sub)module types. This function should not be used outside of testing.
     """
     # TODO: Bring this under the generic hook
-    type_m = type(m)
+    type_m = type(self)
 
     # In the case of duplicate types
     layer_type = registered_name.split(".")[-1]
