@@ -7,10 +7,10 @@ from transformers import OPTForCausalLM
 import torch
 from torch import Tensor
 
-from opt_client import Client
-from hook_utils import get_activation_capture_hook_dict, apply_forward_hook
-from activation_utils import ActivationPayload
-from test_activation_editing import (
+from metaseq_cli.opt_client import Client
+from metaseq_cli.hook_utils import get_activation_capture_hook_dict, apply_forward_hook
+from metaseq_cli.activation_utils import ActivationPayload
+from metaseq_cli.test_activation_editing import (
     replace_with_ones,
 )
 

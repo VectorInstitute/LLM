@@ -9,7 +9,7 @@ from einops import rearrange
 import torch
 from torch import Tensor
 
-import activation_utils
+from metaseq_cli import activation_utils
 from megatron.mpu.mappings import gather_from_tensor_model_parallel_region
 from megatron.mpu.utils import split_tensor_along_last_dim
 from megatron.mpu.layers import ColumnParallelLinear, RowParallelLinear

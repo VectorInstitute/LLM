@@ -8,7 +8,7 @@ from functools import cached_property
 import cloudpickle
 import requests
 
-from activation_utils import ActivationPayload
+from metaseq_cli.activation_utils import ActivationPayload
 
 
 def check_response(resp):
