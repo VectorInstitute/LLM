@@ -46,9 +46,11 @@ WORKDIR /build/fairscale
 RUN git checkout 1bc96fa8c69def6d990e42bfbd75f86146ce29bd
 RUN pip3 install .
 
+RUN echo "here"
+
 # Install metaseq
 WORKDIR /build
-RUN git clone --branch bugfix/build-fixes-125 https://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@github.com/VectorInstitute/LLM.git
+RUN git clone --branch main https://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@github.com/VectorInstitute/LLM.git
 WORKDIR /build/LLM/metaseq
 RUN pip3 install -e .
 RUN python3 setup.py install
