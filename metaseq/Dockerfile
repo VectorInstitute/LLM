@@ -50,7 +50,7 @@ RUN echo "here"
 
 # Install metaseq
 WORKDIR /build
-RUN git clone --branch main https://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@github.com/VectorInstitute/LLM.git
+RUN git clone --branch feature/a40-build https://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@github.com/VectorInstitute/LLM.git
 WORKDIR /build/LLM/metaseq
 RUN pip3 install -e .
 RUN python3 setup.py install
