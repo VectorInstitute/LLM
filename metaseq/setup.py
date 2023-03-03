@@ -169,7 +169,8 @@ def do_setup(package_data):
             "tqdm",
             "typing_extensions",
             "einops",
-            "cpm-kernels"
+            "cpm-kernels",
+            "cloudpickle"
         ],
         dependency_links=dependency_links,
         packages=find_packages(
