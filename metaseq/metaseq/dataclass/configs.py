@@ -206,6 +206,12 @@ class CommonConfig(MetaseqDataclass):
             "argparse_alias": "--quiet",
         },
     )
+    quantize: bool = field(
+        default=False,
+        metadata={"help": "Quantize the model or not"})
+    quantize_bit_width: int = field(
+        default=8,
+        metadata={"help": "Int level to quantize model to: [4, 8]"})
 
 
 @dataclass

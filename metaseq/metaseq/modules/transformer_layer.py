@@ -274,6 +274,8 @@ class TransformerDecoderLayer(nn.Module):
             initialize_params_on_gpu=initialize_params_on_gpu,
             full_megatron_init=getattr(args, "full_megatron_init", False),
             megatron_init_sigma=getattr(args, "megatron_init_sigma", 0.006),
+            quantize=getattr(args, "_quantize", False),
+            quantize_bit_width=getattr(args, "_quantize_bit_width", None),
             dtype=self._get_model_init_dtype(),
         )
 
@@ -283,6 +285,8 @@ class TransformerDecoderLayer(nn.Module):
             initialize_params_on_gpu=initialize_params_on_gpu,
             full_megatron_init=getattr(args, "full_megatron_init", False),
             megatron_init_sigma=getattr(args, "megatron_init_sigma", 0.006),
+            quantize=getattr(args, "_quantize", False),
+            quantize_bit_width=getattr(args, "_quantize_bit_width", None),
             num_layers=args.decoder_layers,
             dtype=self._get_model_init_dtype(),
         )

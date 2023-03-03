@@ -45,7 +45,7 @@ from metaseq.service.constants import (
 from metaseq.service.utils import get_my_ip, encode_fn, build_logger
 from metaseq.service.responses import OAIResponse
 
-from hook_utils import get_activation_capture_hook_dict, apply_forward_hook
+from metaseq_cli.hook_utils import get_activation_capture_hook_dict, apply_forward_hook
 
 
 app = Flask(__name__)
@@ -198,16 +198,17 @@ def batching_loop(timeout=100, max_tokens=MAX_BATCH_TOKENS):
                 activation_dict = {}
 
                 try:
-                    desired_module_activations = request_object.pop(
-                        "desired_module_activations", None
+                    # Activation retrieval and editing
+                    encoded_activation_payload = request_object.pop(
+                        "encoded_activation_payload", None
                     )
 
                     act_retrieval_aux = request_object.pop("_aux", None)
 
-                    if desired_module_activations:
+                    if encoded_activation_payload is not None:
                         hook_dict, activation_dict = get_activation_capture_hook_dict(
                             generator.models[0],
-                            desired_module_activations,
+                            encoded_activation_payload,
                             aux=act_retrieval_aux,
                         )
 
@@ -270,6 +271,19 @@ def batching_loop(timeout=100, max_tokens=MAX_BATCH_TOKENS):
                 continue
 
 
+def _get_total_param_buffer_size(model):
+    mem_params = sum([
+        param.nelement() * param.element_size()
+        for param in model.parameters()
+    ])
+    mem_bufs = sum([
+        buf.nelement() * buf.element_size()
+        for buf in model.buffers()
+    ])
+    mem = mem_params + mem_bufs # in bytes
+    return mem
+
+
 def worker_main(cfg1: MetaseqConfig, namespace_args=None):
     # disable multithreading in tokenizers and torch, as different Flask threads
     # may then fight for resources.
@@ -286,6 +300,8 @@ def worker_main(cfg1: MetaseqConfig, namespace_args=None):
 
     generator = GeneratorInterface(cfg)
     models = generator.load_model()  # noqa: F841
+
+    logger.info(f"Loaded model is taking {_get_total_param_buffer_size(models[0])} bytes of mem")
 
     if torch.distributed.get_rank() == 0:
         print(models[0])    # Cleaner to print
@@ -312,15 +328,15 @@ def worker_main(cfg1: MetaseqConfig, namespace_args=None):
                     None, src_rank=0, group=distributed_utils.get_global_group()
                 )
 
-                desired_module_activations = request_object.pop(
-                    "desired_module_activations", None
+                encoded_activation_payload = request_object.pop(
+                    "encoded_activation_payload", None
                 )
                 act_retrieval_aux = request_object.pop("_aux", None)
 
-                if desired_module_activations:
+                if encoded_activation_payload is not None:
                     hook_dict, _ = get_activation_capture_hook_dict(
                         generator.models[0],
-                        desired_module_activations,
+                        encoded_activation_payload,
                         aux=act_retrieval_aux,
                     )
 

@@ -20,7 +20,7 @@ UNBATCHED_ARG_DICT = OrderedDict([
     ["stop", None],
     ["echo", False],
     # tuple/list of things
-    ["desired_module_activations", tuple()],
+    ["encoded_activation_payload", None],
 ])
 
 MAX_SEQ_LEN = 2048
@@ -45,10 +45,10 @@ DEFAULT_PORT = 6969
 # reshard-model_part-7.pt
 
 # TODO: change this for each model
-MODEL_PARALLEL = 2
-TOTAL_WORLD_SIZE = 2
+MODEL_PARALLEL = 16
+TOTAL_WORLD_SIZE = 16
 
-CHECKPOINT_FOLDER = "/checkpoint/opt_test/original/OPT-6.7B"
+CHECKPOINT_FOLDER = "/checkpoint/opt_test/original/OPT-175B-mp32/resharded_megatron"
 #CHECKPOINT_FOLDER = "/checkpoint/opt_test/original/OPT-125M"
 
 ###
@@ -59,7 +59,7 @@ BPE_VOCAB = "/scratch/ssd002/projects/opt_test/gpt2-vocab.json"
 # MODEL_FILE = os.path.join(CHECKPOINT_FOLDER, "reshard.pt")
 
 # MEGATRON stuff
-MODEL_FILE = os.path.join(CHECKPOINT_FOLDER, "megatronreshard.pt")
+MODEL_FILE = os.path.join(CHECKPOINT_FOLDER, "reshard.pt")
 
 
 LAUNCH_ARGS = [
@@ -81,3 +81,15 @@ LAUNCH_ARGS = [
     f"--max-tokens {BATCH_SIZE * MAX_SEQ_LEN}",
     "/tmp",  # required "data" argument.
 ]
+
+
+# Quantization stuff
+QUANTIZE = False
+QUANTIZE_BIT_WIDTH = 4
+
+
+if QUANTIZE:
+    LAUNCH_ARGS.extend([
+        "--quantize",
+        f"--quantize-bit-width {QUANTIZE_BIT_WIDTH}",
+    ])

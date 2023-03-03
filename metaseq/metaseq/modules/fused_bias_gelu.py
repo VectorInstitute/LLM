@@ -29,7 +29,7 @@ def load_megatron_fused_kernel():
     from argparse import Namespace
 
     if not hasattr(fused_kernels, "load"):
-        # verion of megatron that has them precompiled, we cans skip this...
+        # version of megatron that has them precompiled, we cans skip this...
         return
 
     if not torch.distributed.is_initialized():

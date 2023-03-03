@@ -121,6 +121,9 @@ def parse_args_and_arch(
     # we parse twice. First we parse the model/criterion/optimizer, then we
     # parse a second time after adding the *-specific arguments.
     # If input_args is given, we will parse those args instead of sys.argv.
+    # NOTE: This is done so we can multiplex between model/criterion/
+    #       optimizer. Ie. Choose model/criterion/optimizer by parsing once,
+    #       then add those *-specific args and parse again for those.
     args, _ = parser.parse_known_args(input_args)
 
     # Add model-specific args to parser.
