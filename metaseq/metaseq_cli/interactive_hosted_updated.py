@@ -299,12 +299,16 @@ def worker_main(cfg1: MetaseqConfig, namespace_args=None):
     cfg = cfg1
 
     generator = GeneratorInterface(cfg)
+
+    #from megatron.mpu.initialize import get_pipeline_model_parallel_rank
+
+    #if get_pipeline_model_parallel_rank() == 0:
     models = generator.load_model()  # noqa: F841
 
     logger.info(f"Loaded model is taking {_get_total_param_buffer_size(models[0])} bytes of mem")
 
     if torch.distributed.get_rank() == 0:
-        print(models[0])    # Cleaner to print
+        #print(models[0])    # Cleaner to print
         logger.info("Model training: {}".format(models[0].training))
 
     assert len(models) == 1
@@ -446,6 +450,8 @@ def completions(engine=None):
     # - list of list of ints. Pretokenized multiple generations.
 
     # our approach is to turn everything into the last case
+
+    logger.info(f"Rank{torch.distributed.get_rank()} entering completions!")
 
     prompts = request.json["prompt"]
     del request.json["prompt"]
