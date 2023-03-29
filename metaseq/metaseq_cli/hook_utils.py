@@ -119,8 +119,8 @@ def get_activation_capture_hook_dict(
                     hf_forward_hook_fn,
                     n,
                     activation_dict,
-                    aux,
                     editing_fn,
+                    aux=aux,
                 )
 
     return hook_dict, activation_dict
