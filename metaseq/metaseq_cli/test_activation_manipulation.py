@@ -12,8 +12,8 @@ from metaseq_cli.hook_utils import (
     get_activation_capture_hook_dict,
     apply_forward_hook,
 )
-from metaseq_cli.activation_utils import ActivationPayload
-from metaseq_cli.test_activation_editing import (
+from metaseq_cli.activation_utils import (
+    ActivationPayload,
     replace_with_ones,
 )
 
