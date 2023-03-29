@@ -108,10 +108,10 @@ def get_activation_capture_hook_dict(
             if model_type == "opt":
                 hook_dict[n] = partial(
                     generic_forward_hook_fn,
-                    registered_name=n,
-                    save_dict=activation_dict,
+                    n,
+                    activation_dict,
+                    editing_fn,
                     aux=aux,
-                    editing_fn=editing_fn,
                 )
 
             elif model_type == "hf":
@@ -119,8 +119,8 @@ def get_activation_capture_hook_dict(
                     hf_forward_hook_fn,
                     n,
                     activation_dict,
-                    aux,
                     editing_fn,
+                    aux=aux,
                 )
 
     return hook_dict, activation_dict
