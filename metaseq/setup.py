@@ -128,49 +128,49 @@ def do_setup(package_data):
         long_description=readme,
         long_description_content_type="text/markdown",
         setup_requires=[
-            "cython",
-            'numpy; python_version>="3.7"',
-            "setuptools>=18.0",
+            "cython==0.29.34",
+            "numpy==1.23.0",
+            "setuptools",
         ],
         install_requires=[
             # protobuf version pinned due to tensorboard not pinning a version.
             #  https://github.com/protocolbuffers/protobuf/issues/10076
             "protobuf==3.20.1",
-            "aim>=3.9.4",
+            "aim==3.17.4",
             "azure-storage-blob",
-            "boto3",
+            "boto3==1.26.139",
             "black==22.3.0",
             "click==8.0.4",
-            "cython",
+            "cython==0.29.34",
             'dataclasses; python_version<"3.7"',
-            "editdistance",
-            "fire",
+            "editdistance==0.6.2",
+            "fire==0.5.0",
             "flask==2.1.1",  # for api
             "hydra-core>=1.1.0,<1.2",
-            "iopath",
-            "ipdb",
-            "ipython",
+            "iopath==0.1.10",
+            "ipdb==0.13.13",
+            "ipython==8.12.2",
             "Jinja2==3.1.1",  # for evals
-            "markupsafe",  # for evals
-            "more_itertools",
-            "mypy",
-            "ninja",
-            'numpy==1.23; python_version>="3.7"',
-            "omegaconf<=2.1.1",
-            "pre-commit",
-            "pytest",
-            "regex",
-            "scikit-learn",  # for evals
-            "sacrebleu",  # for evals
+            "markupsafe==2.1.2",  # for evals
+            "more_itertools==9.1.0",
+            "mypy==1.3.0",
+            "ninja==1.11.1",
+            "numpy==1.23.0",
+            "omegaconf==2.1.1",
+            "pre-commit==3.3.2",
+            "pytest==7.3.1",
+            "regex==2023.5.5",
+            "scikit-learn==1.2.2",  # for evals
+            "sacrebleu==2.3.1",  # for evals
             "tensorboard==2.8.0",
-            "timeout-decorator",
-            "tokenizers",
-            "torch",
-            "tqdm",
-            "typing_extensions",
-            "einops",
-            "cpm-kernels",
-            "cloudpickle"
+            "timeout-decorator==0.5.0",
+            "tokenizers==0.13.3",
+            "torch==1.10.1+cu113",
+            "tqdm==4.65.0",
+            "typing_extensions==4.6.1",
+            "einops==0.6.1",
+            "cpm-kernels==1.0.11",
+            "cloudpickle==2.2.1"
         ],
         dependency_links=dependency_links,
         packages=find_packages(
@@ -186,10 +186,10 @@ def do_setup(package_data):
                 "flake8==3.9.2",
                 "black==22.3.0",
                 # test deps
-                "iopath",
-                "transformers",
-                "pyarrow",
-                "boto3",
+                "iopath==0.1.10",
+                "transformers==4.29.2",
+                "pyarrow==12.0.0",
+                "boto3==1.26.139",
             ]
         },
         package_data=package_data,
