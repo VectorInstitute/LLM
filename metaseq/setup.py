@@ -160,7 +160,7 @@ def do_setup(package_data):
             "pre-commit",
             "pytest",
             "regex",
-            "sklearn",  # for evals
+            "scikit-learn",  # for evals
             "sacrebleu",  # for evals
             "tensorboard==2.8.0",
             "timeout-decorator",
